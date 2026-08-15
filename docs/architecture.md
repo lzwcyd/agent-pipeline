@@ -1,4 +1,4 @@
-# 架构设计：表单驱动的多 Agent 研发流水线
+# 架构设计：agent-pipeline 多 Agent 研发交付流水线
 
 ## 1. 总览
 

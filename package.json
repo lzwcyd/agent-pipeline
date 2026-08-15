@@ -1,8 +1,8 @@
 {
-  "name": "form-driven-pipeline",
+  "name": "agent-pipeline",
   "version": "0.1.0",
   "private": true,
-  "description": "表单驱动的多 Agent 研发流水线：钉钉/飞书收集单 → 需求评估 → 开发 → 测试部署 → 产品验收 → 生产部署",
+  "description": "agent-pipeline：多 Agent 研发交付流水线（需求触发 → 评估 → 开发 → 测试 → 部署 → 验收 → 生产，流程可定制编排、支持多开发 Agent 联调）",
   "type": "module",
   "packageManager": "pnpm@10.0.0",
   "scripts": {

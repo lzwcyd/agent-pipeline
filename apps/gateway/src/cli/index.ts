@@ -25,7 +25,7 @@ export function buildCli(deps: CliDeps): Command {
   const program = new Command();
   program
     .name("pipeline-gateway")
-    .description("表单驱动的多 Agent 研发流水线网关")
+    .description("agent-pipeline：多 Agent 研发交付流水线网关")
     .version("0.1.0");
 
   program

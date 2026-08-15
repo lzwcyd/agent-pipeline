@@ -1,6 +1,6 @@
 # 部署文档
 
-本文档描述「表单驱动的多 Agent 研发流水线」网关的部署方式与运维要点。
+本文档描述「agent-pipeline 多 Agent 研发交付流水线」网关的部署方式与运维要点。
 
 ## 1. 环境要求
 
@@ -19,7 +19,7 @@
 
 ```bash
 # 1) 克隆代码后安装依赖
-cd form-driven-pipeline
+cd agent-pipeline
 corepack pnpm install
 
 # 2) 安装 DSH headless profile（一次性，所有用户/机器都需要）
@@ -78,13 +78,13 @@ corepack pnpm gateway serve
 ```ini
 # /etc/systemd/system/pipeline-gateway.service
 [Unit]
-Description=Form-Driven Multi-Agent Pipeline Gateway
+Description=Agent-Pipeline Gateway
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/form-driven-pipeline
-EnvironmentFile=/opt/form-driven-pipeline/.env
+WorkingDirectory=/opt/agent-pipeline
+EnvironmentFile=/opt/agent-pipeline/.env
 ExecStart=/usr/local/bin/corepack pnpm gateway serve
 Restart=always
 RestartSec=5
@@ -96,7 +96,7 @@ WantedBy=multi-user.target
 ### pm2
 ```bash
 npm i -g pm2
-pm2 start "corepack pnpm gateway serve" --name pipeline-gateway --cwd /opt/form-driven-pipeline
+pm2 start "corepack pnpm gateway serve" --name agent-pipeline-gateway --cwd /opt/agent-pipeline
 pm2 save && pm2 startup
 ```
 
@@ -136,9 +136,9 @@ CMD ["corepack", "pnpm", "gateway", "serve"]
 
 ```bash
 docker build -t pipeline-gateway .
-docker run -d --name pipeline-gateway \
+docker run -d --name agent-pipeline-gateway \
   -p 3081:3081 \
-  -v /opt/form-driven-pipeline/.env:/app/.env:ro \
+  -v /opt/agent-pipeline/.env:/app/.env:ro \
   -v ~/.dsh:/root/.dsh:ro \
   -v pipeline-data:/app/data \
   pipeline-gateway
