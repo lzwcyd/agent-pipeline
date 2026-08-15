@@ -1,0 +1,65 @@
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { z } from "zod";
+
+/** 从当前工作目录向上查找仓库根（含 pnpm-workspace.yaml 的目录） */
+export function resolveRepoRoot(from = process.cwd()): string {
+  let dir = resolve(from);
+  for (;;) {
+    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error("未找到仓库根（缺少 pnpm-workspace.yaml）");
+    dir = parent;
+  }
+}
+
+const envSchema = z.object({
+  PORT: z.coerce.number().default(3081),
+  PIPELINE_DATA_DIR: z.string().default("data"),
+  DSH_CLI: z.string().default("dsh"),
+  DSH_AGENT_TIMEOUT_MS: z.coerce.number().default(600_000),
+  AUTO_ACCEPT: z
+    .string()
+    .default("true")
+    .transform((v) => v !== "false" && v !== "0"),
+  OPS_MODE: z.enum(["auto", "kubectl", "simulated"]).default("auto"),
+  PIPELINE_MODE: z.enum(["simulation", "real"]).default("simulation"),
+  /** 验收失败时的默认处理：rollback（回滚测试环境后打回开发）| rework（直接打回开发）| reject（直接终止） */
+  ACCEPTANCE_FAILURE_POLICY: z.enum(["rollback", "rework", "reject"]).default("rollback"),
+  /** 测试/验收未通过打回开发的最大次数，超限终止 */
+  MAX_REWORK: z.coerce.number().default(3),
+  NOTIFY_CHANNELS: z.string().default("console"),
+  NOTIFY_FEISHU_WEBHOOK_URL: z.string().optional(),
+  NOTIFY_FEISHU_SECRET: z.string().optional(),
+  NOTIFY_DINGTALK_WEBHOOK_URL: z.string().optional(),
+  NOTIFY_DINGTALK_SECRET: z.string().optional(),
+  FEISHU_ENCRYPT_KEY: z.string().optional(),
+  FEISHU_VERIFICATION_TOKEN: z.string().optional(),
+  FEISHU_APP_ID: z.string().optional(),
+  FEISHU_APP_SECRET: z.string().optional(),
+  DINGTALK_APP_KEY: z.string().optional(),
+  DINGTALK_APP_SECRET: z.string().optional(),
+});
+
+export type EnvConfig = ReturnType<typeof loadConfig>;
+
+/** 统一配置入口：环境变量 + 仓库根路径解析 */
+export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
+  const parsed = envSchema.safeParse(env);
+  if (!parsed.success) {
+    const detail = parsed.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    throw new Error(`环境变量配置无效：${detail}`);
+  }
+  const repoRoot = resolveRepoRoot();
+  const dataDir = resolve(repoRoot, parsed.data.PIPELINE_DATA_DIR);
+  return {
+    ...parsed.data,
+    repoRoot,
+    dataDir,
+    pipelinesDir: join(dataDir, "pipelines"),
+    artifactsRoot: join(dataDir, "artifacts"),
+    k8sManifestsDir: join(repoRoot, "k8s", "demo-app"),
+  };
+}

@@ -1,0 +1,4 @@
+# headless profile: one-shot DSH agent runs driven by the pipeline gateway.
+# `dsh --profile headless "<task>"` 提交一个任务，等待 agent 静默后把最后一条
+# assistant 文本输出到 stdout（成功退出码 0）。
+[]
