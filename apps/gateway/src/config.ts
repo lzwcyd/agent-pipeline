@@ -28,6 +28,10 @@ const envSchema = z.object({
   ACCEPTANCE_FAILURE_POLICY: z.enum(["rollback", "rework", "reject"]).default("rollback"),
   /** 测试/验收未通过打回开发的最大次数，超限终止 */
   MAX_REWORK: z.coerce.number().default(3),
+  /** 流程模板文件路径（JSON）。缺省使用内置默认模板 */
+  PIPELINE_TEMPLATE: z.string().optional(),
+  /** 日志级别：trace|debug|info|warn|error */
+  LOG_LEVEL: z.string().default("info"),
   NOTIFY_CHANNELS: z.string().default("console"),
   NOTIFY_FEISHU_WEBHOOK_URL: z.string().optional(),
   NOTIFY_FEISHU_SECRET: z.string().optional(),
@@ -60,6 +64,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     dataDir,
     pipelinesDir: join(dataDir, "pipelines"),
     artifactsRoot: join(dataDir, "artifacts"),
+    logsDir: join(dataDir, "logs"),
     k8sManifestsDir: join(repoRoot, "k8s", "demo-app"),
+    // 流程模板路径相对仓库根解析
+    pipelineTemplateFile: parsed.data.PIPELINE_TEMPLATE ? resolve(repoRoot, parsed.data.PIPELINE_TEMPLATE) : undefined,
   };
 }

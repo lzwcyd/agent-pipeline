@@ -1,0 +1,12 @@
+{
+  "name": "default",
+  "stages": [
+    { "id": "evaluating", "agent": "evaluator", "onSuccess": "dev_in_progress" },
+    { "id": "dev_in_progress", "agent": "developer", "onSuccess": "testing" },
+    { "id": "testing", "agent": "tester", "onSuccess": "test_deploying", "reworkTarget": "dev_in_progress" },
+    { "id": "test_deploying", "agent": "ops", "onSuccess": "awaiting_acceptance", "ops": { "action": "deploy", "env": "test" } },
+    { "id": "awaiting_acceptance", "agent": "acceptance", "onSuccess": "prod_deploying", "reworkTarget": "dev_in_progress" },
+    { "id": "test_rollback", "agent": "ops", "onSuccess": "dev_in_progress", "ops": { "action": "rollback", "env": "test" } },
+    { "id": "prod_deploying", "agent": "ops", "onSuccess": "done", "ops": { "action": "deploy", "env": "prod" } }
+  ]
+}

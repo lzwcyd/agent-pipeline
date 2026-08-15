@@ -18,6 +18,7 @@ export function buildHistory(p: Pipeline) {
   return {
     id: p.id,
     status: p.status,
+    template: p.templateName,
     trigger: {
       type: p.submission.meta.triggerType,
       source: p.submission.source,

@@ -7,7 +7,9 @@ import { DshRunner } from "../src/agents/dsh-runner.js";
 import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
 import { CompositeNotifier } from "../src/notify/notifier.js";
+import { DEFAULT_TEMPLATE, loadTemplate } from "../src/pipeline/template.js";
 import type { EnvConfig } from "../src/config.js";
+import type { PipelineTemplate } from "../src/pipeline/template.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const MOCK_DSH = join(REPO_ROOT, "scripts", "mock-dsh.mjs");
@@ -19,7 +21,7 @@ interface Harness {
   cleanup: () => void;
 }
 
-function makeHarness(env: Record<string, string> = {}): Harness {
+function makeHarness(env: Record<string, string> = {}, template: PipelineTemplate = DEFAULT_TEMPLATE): Harness {
   const dir = mkdtempSync(join(tmpdir(), "pipeline-e2e-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
@@ -35,7 +37,7 @@ function makeHarness(env: Record<string, string> = {}): Harness {
   const store = new PipelineStore(cfg.pipelinesDir);
   const notifier = new CompositeNotifier(cfg);
   const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS });
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier });
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, template });
   return {
     cfg,
     store,
@@ -66,7 +68,7 @@ describe("端到端：完整流水线（mock DSH runner）", () => {
   beforeEach(() => {
     h = makeHarness();
   });
-  afterEach(() => h.cleanup());
+  afterEach(() => h?.cleanup());
 
   it("全链路成功：submitted → …（含独立测试阶段）→ done，且记录历史执行", async () => {
     const p = await h.orchestrator.handleSubmission(sampleSubmission);
@@ -267,5 +269,105 @@ describe("端到端：完整流水线（mock DSH runner）", () => {
     p = await h.orchestrator.retry(p.id);
     expect(p.status).toBe("done");
     expect(p.events.some((e) => e.type === "retried")).toBe(true);
+  });
+});
+
+describe("流程模板定制（可增删 agent 节点）", () => {
+  let h: Harness;
+  afterEach(() => h?.cleanup());
+
+  it("插入自定义评审节点（code_review，reviewer agent）", async () => {
+    h = makeHarness({}, loadTemplate(join(REPO_ROOT, "config", "pipelines", "with-code-review.json")));
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    expect(p.templateName).toBe("with-code-review");
+    // 自定义阶段执行过且通过
+    expect(p.agents.code_review?.output?.approved).toBe(true);
+    const stages = p.executions.map((e) => e.stage);
+    expect(stages).toContain("code_review");
+    // 顺序：dev → code_review → testing
+    const devIdx = stages.indexOf("dev_in_progress");
+    const reviewIdx = stages.indexOf("code_review");
+    const testIdx = stages.indexOf("testing");
+    expect(devIdx).toBeGreaterThanOrEqual(0);
+    expect(reviewIdx).toBeGreaterThan(devIdx);
+    expect(testIdx).toBeGreaterThan(reviewIdx);
+  });
+
+  it("评审不通过 → 打回开发 → 修复后通过", async () => {
+    h = makeHarness({ MOCK_REVIEW_REJECT_ONCE: "1" }, loadTemplate(join(REPO_ROOT, "config", "pipelines", "with-code-review.json")));
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    expect(p.reworkCount).toBeGreaterThanOrEqual(1);
+    expect(p.events.some((e) => e.type === "rework" && e.from === "code_review")).toBe(true);
+    // 第二轮评审通过
+    expect(p.agents.code_review?.output?.approved).toBe(true);
+  });
+
+  it("删除测试节点（精简模板：dev 后直接部署）", async () => {
+    const slim = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    slim.stages = slim.stages.filter((s) => s.id !== "testing");
+    slim.stages.find((s) => s.id === "dev_in_progress")!.onSuccess = "test_deploying";
+    h = makeHarness({}, slim);
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    expect(p.executions.some((e) => e.stage === "testing")).toBe(false);
+    expect(p.deploy?.prod?.namespace).toBe("demo-prod");
+  });
+
+  it("模板引用未定义阶段 → 加载报错", () => {
+    expect(() =>
+      loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json")).stages.forEach(() => undefined),
+    ).not.toThrow();
+    const bad = { name: "bad", stages: [{ id: "a", agent: "developer", onSuccess: "missing_stage" }] };
+    const file = join(tmpdir(), `bad-template-${Date.now()}.json`);
+    rmSync(file, { force: true });
+    const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+    writeFileSync(file, JSON.stringify(bad));
+    try {
+      expect(() => loadTemplate(file)).toThrow(/未定义阶段/);
+    } finally {
+      rmSync(file, { force: true });
+    }
+  });
+});
+
+describe("多开发 Agent 并行联调（multi-dev 模板）", () => {
+  let h: Harness;
+  afterEach(() => h?.cleanup());
+
+  it("两个服务：契约轮 → 汇总广播 → 实现轮 → 全链路 done", async () => {
+    h = makeHarness({}, loadTemplate(join(REPO_ROOT, "config", "pipelines", "multi-dev.json")));
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    // 多 Agent 聚合输出
+    const devOut = p.agents.dev_in_progress?.output ?? {};
+    expect(devOut.multi).toBe(true);
+    const services = Object.keys(devOut.services ?? {});
+    expect(services.sort()).toEqual(["order-service", "payment-service"]);
+    // 契约被收集并广播（mock 实现轮在 notes 中回显收到的契约数）
+    expect(Object.keys(devOut.contracts ?? {}).length).toBe(2);
+    for (const svc of services) {
+      const out = devOut.services[svc] as Record<string, unknown>;
+      expect(out.service).toBe(svc);
+      expect(String(out.notes ?? "")).toContain("收到契约 2 份");
+    }
+    // 每服务独立产物目录
+    expect(p.artifacts.some((a) => a.path.includes("order-service"))).toBe(true);
+    expect(p.artifacts.some((a) => a.path.includes("payment-service"))).toBe(true);
+    // 后续阶段照常（测试/部署/验收/生产）
+    expect(p.agents.testing?.output?.status).toBe("pass");
+    expect(p.deploy?.prod?.namespace).toBe("demo-prod");
+  });
+
+  it("子任务输出不可解析时自动重试一次并成功", async () => {
+    h = makeHarness(
+      { MOCK_BAD_JSON_FIRST: "1" },
+      loadTemplate(join(REPO_ROOT, "config", "pipelines", "multi-dev.json")),
+    );
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    expect(p.agents.dev_in_progress?.output?.multi).toBe(true);
+    expect(Object.keys(p.agents.dev_in_progress?.output?.contracts ?? {}).length).toBe(2);
   });
 });

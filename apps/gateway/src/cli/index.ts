@@ -7,6 +7,8 @@ import type { FormSource } from "../forms/index.js";
 import type { Notifier } from "../notify/notifier.js";
 import { startServer } from "../http/server.js";
 import { buildHistory } from "../pipeline/history.js";
+import type { PipelineTemplate } from "../pipeline/template.js";
+import type { AppLogger } from "../logger.js";
 
 export interface CliDeps {
   cfg: EnvConfig;
@@ -15,6 +17,8 @@ export interface CliDeps {
   runner: DshRunner;
   sources: Record<"mock" | "feishu" | "dingtalk" | "api", FormSource>;
   notifier: Notifier;
+  logger: AppLogger;
+  template: PipelineTemplate;
 }
 
 export function buildCli(deps: CliDeps): Command {
@@ -64,6 +68,14 @@ export function buildCli(deps: CliDeps): Command {
       // eslint-disable-next-line no-console
       console.log(`流水线 ${pipeline.id} 终态：${finished.status}`);
       await deps.notifier.close();
+    });
+
+  program
+    .command("template")
+    .description("查看当前流程模板（阶段序列与 agent 配置）")
+    .action(() => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(deps.template, null, 2));
     });
 
   const pipelines = program.command("pipelines").description("流水线管理");

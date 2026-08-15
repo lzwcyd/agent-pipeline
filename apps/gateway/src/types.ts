@@ -51,18 +51,11 @@ export interface FormSubmission {
   raw: unknown;
 }
 
-/** 流水线阶段（进行中的状态） */
-export type StageKey =
-  | "evaluating"
-  | "dev_in_progress"
-  | "testing"
-  | "test_deploying"
-  | "awaiting_acceptance"
-  | "test_rollback"
-  | "prod_deploying";
+/** 流水线阶段（进行中的状态）。内置阶段 + 流程模板自定义阶段（string） */
+export type StageKey = string;
 
 /** 流水线状态 */
-export type PipelineStatus = StageKey | "submitted" | "rejected" | "failed" | "done";
+export type PipelineStatus = string;
 
 /** 流水线事件（追加日志，供审计/展示） */
 export type PipelineEvent =
@@ -118,6 +111,8 @@ export interface AcceptanceVerdict {
 export interface Pipeline {
   id: string;
   status: PipelineStatus;
+  /** 使用的流程模板名 */
+  templateName: string;
   submission: FormSubmission;
   createdAt: string;
   updatedAt: string;
@@ -157,8 +152,8 @@ export interface PipelineExecution {
 /** Agent 任务的统一入参（会整体作为 headless 任务的 task 文本） */
 export interface AgentTask {
   pipelineId: string;
-  role: "evaluator" | "developer" | "tester" | "ops" | "acceptance";
-  stage: StageKey;
+  role: "evaluator" | "developer" | "tester" | "reviewer" | "ops" | "acceptance";
+  stage: string;
   requirement: {
     title: string;
     description: string;

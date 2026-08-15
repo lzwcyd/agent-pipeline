@@ -3,18 +3,18 @@
 监听 **钉钉 / 飞书收集单** 的提交事件，自动驱动一条完整的研发流水线：
 
 ```
-收集单提交（钉钉/飞书/模拟）
-   │  （webhook 验签 → 归一化为 FormSubmission）
+触发（钉钉/飞书表单 · 标准接口 · 模拟器）
+   │  （验签 → 归一化为标准结构 FormSubmission）
    ▼
-┌──────────────┐  评估通过   ┌──────────────┐  开发完成   ┌──────────────┐  测试通过
-│ 需求评估 Agent │ ─────────▶ │   开发 Agent   │ ─────────▶ │   测试 Agent   │ ────────┐
-└──────────────┘            └──────────────┘            └──────────────┘         │
-   │ 不通过（拒绝）                 ▲                            │ 不通过（打回开发）      │
-   ▼                              │                            ▼                       ▼
- rejected（终态）      测试/验收未通过─┼──┐          ┌────────────────┐        ┌────────────────┐
-                       打回开发（≤MAX_REWORK）      │ 运维 Agent（测试）│        │ 运维 Agent（测试）│
-                                    │              └────────────────┘        └────────────────┘
-                                    └───────────── 回滚测试环境（验收不通过时先回滚再打回）
+┌──────────────┐  评估通过   ┌──────────────────┐  开发完成   ┌──────────────┐  测试通过
+│ 需求评估 Agent │ ─────────▶ │ 开发 Agent（可多个，│ ─────────▶ │   测试 Agent   │ ────────┐
+└──────────────┘            │ 契约联调并行开发）  │            └──────────────┘         │
+   │ 不通过（拒绝）                 ▲            │               │ 不通过（打回开发）      │
+   ▼                              │            │               ▼                       ▼
+ rejected（终态）      测试/验收/评审未通过─┼───┐    ┌────────────────┐        ┌────────────────┐
+                        打回开发（≤MAX_REWORK）  │    │ 运维 Agent（测试）│        │ 运维 Agent（测试）│
+                                    │           │    └────────────────┘        └────────────────┘
+                                    └───────────┴── 回滚测试环境（验收失败按策略）       │
                                                              │ 部署到测试环境
                                                              ▼
                                                    ┌────────────────┐
@@ -28,6 +28,16 @@
 ```
 
 - **Agent 运行时**：DeepSeek Harness（DSH）`headless` profile —— 每个角色一次 `dsh --profile headless "<task>"` 调用，输出严格 JSON 驱动状态机。
+- **可定制编排**：流程模板（JSON）定义阶段序列与 agent 角色，可**增删 agent 节点**（示例：加评审节点、删测试节点），见 [docs/usage.md](docs/usage.md#4-定制研发流程流程模板)。
+- **多开发 Agent 联调**：开发阶段支持 `multi` 配置，多服务并行开发，**契约轮 → 汇总广播 → 实现轮**模拟团队联调，见 [docs/usage.md](docs/usage.md#5-多开发-agent-并行联调分布式系统)。
+- **表单接入**：可插拔适配器。`mock`（模拟器）随时可用；`feishu`/`dingtalk` 适配器已实现验签与字段归一化；另有**标准接口触发** `POST /api/pipelines`。
+- **部署**：Kubernetes（kubectl 模式），无集群时自动降级为 simulated 模式（输出完整部署计划与证据）。
+- **日志**：pino 结构化日志（console + `data/logs/pipeline.log`），支持 `GET /api/logs` 查询。
+- **开发模式**：`PIPELINE_MODE=simulation`（默认）产出方案文档；`real` 模式要求真实代码与真实部署。
+
+**文档**：[部署文档](docs/deployment.md) · [使用文档](docs/usage.md) · [架构设计](docs/architecture.md)
+
+- **Agent 运行时**：DeepSeek Harness（DSH）`headless` profile —— 每个角色一次 `dsh --profile headless "<task>"` 调用，输出严格 JSON 驱动状态机。
 - **表单接入**：可插拔适配器。`mock`（模拟器）随时可用；`feishu`/`dingtalk` 适配器已实现验签与字段归一化，配好凭证即可直连。
 - **部署**：Kubernetes（kubectl 模式），无集群时自动降级为 simulated 模式（输出完整部署计划与证据）。
 - **开发模式**：`PIPELINE_MODE=simulation`（默认）产出方案文档；`real` 模式要求真实代码与真实部署。
@@ -38,10 +48,11 @@
 ├── apps/gateway/            # Node.js/TypeScript 网关（Express）
 │   └── src/
 │       ├── forms/           # 触发源：mock / feishu / dingtalk / api（统一归一化 + 验签）
-│       ├── pipeline/        # 状态机、JSON 持久化、编排器、历史视图
-│       ├── agents/          # DSH runner、角色 prompt、任务组装
+│       ├── pipeline/        # 状态机、流程模板、持久化、编排器、历史视图
+│       ├── agents/          # DSH runner（含日志）、角色 prompt、任务组装
 │       ├── notify/          # 通知器：console / 飞书机器人 / 钉钉机器人
 │       └── http/ cli/       # webhook+API、命令行
+├── config/pipelines/        # 流程模板（default / with-code-review / multi-dev 示例）
 ├── profiles/headless/       # DSH headless profile（agent 运行时，需安装到 ~/.dsh）
 ├── k8s/demo-app/            # 示例应用清单（base + test/prod overlay，kustomize）
 ├── scripts/                 # 安装、模拟提交、一键演示
@@ -169,11 +180,11 @@ submitted → evaluating → dev_in_progress → testing → test_deploying → 
 ## 测试
 
 ```bash
-corepack pnpm test        # 38 个用例：状态机、验签、字段映射、策略、历史、端到端（mock DSH runner）
+corepack pnpm test        # 43 个用例：状态机、验签、字段映射、策略、历史、流程模板、多 Agent 联调、端到端（mock DSH runner）
 corepack pnpm typecheck
 ```
 
-端到端测试使用 `scripts/mock-dsh.mjs`（无 LLM 成本）模拟 agent，覆盖：全链路成功、评估拒绝、**测试不通过打回开发**、**打回超限终止**、**验收失败三策略（rollback/rework/reject）**、**触发级 policy 覆盖环境变量**、**标准接口触发**、**历史执行记录**、人工验收闸门、失败重试。
+端到端测试使用 `scripts/mock-dsh.mjs`（无 LLM 成本）模拟 agent，覆盖：全链路成功、评估拒绝、**测试不通过打回开发**、**打回超限终止**、**验收失败三策略（rollback/rework/reject）**、**触发级 policy 覆盖环境变量**、**标准接口触发**、**历史执行记录**、**流程模板定制（插入评审节点/删除测试节点/非法模板报错）**、**多开发 Agent 契约联调**、人工验收闸门、失败重试。
 
 ## 关键设计
 
@@ -181,5 +192,6 @@ corepack pnpm typecheck
 - **模拟 vs 真实**：`PIPELINE_MODE=simulation` 时验收 Agent 按“完整性核对”（需求覆盖/方案/测试计划/部署证据）评审；`real` 时严格按真实交付验收。
 - **异步驱动**：webhook 秒回 202，流水线后台执行，每个阶段结果持久化为 `data/pipelines/<id>.json` + `data/artifacts/<id>/<stage>/` 产物。
 - **部署模式**：`OPS_MODE=auto` 探测 kubectl，无集群时运维 Agent 输出模拟部署计划与证据（rendered-manifests.yaml 等），K8s 就绪后改 `OPS_MODE=kubectl` 即为真实部署。
+- **日志**：pino 结构化日志落盘 `data/logs/pipeline.log`，每条 agent 调用记录 pipelineId/stage/role/耗时/退出码，`GET /api/logs` 支持按流水线/级别过滤。
 
 详细设计见 [docs/architecture.md](docs/architecture.md)。

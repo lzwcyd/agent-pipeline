@@ -1,21 +1,28 @@
+import { openSync, readSync, statSync, closeSync } from "node:fs";
+import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import type { EnvConfig } from "../config.js";
 import type { FormSource } from "../forms/index.js";
 import { FormParseError } from "../forms/index.js";
 import type { Orchestrator } from "../pipeline/orchestrator.js";
 import type { PipelineStore } from "../pipeline/store.js";
+import type { PipelineTemplate } from "../pipeline/template.js";
 import type { Pipeline } from "../types.js";
 import { buildHistory } from "../pipeline/history.js";
+import type { AppLogger } from "../logger.js";
 
 export interface ServerDeps {
   cfg: EnvConfig;
   store: PipelineStore;
   orchestrator: Orchestrator;
   sources: Record<"mock" | "feishu" | "dingtalk" | "api", FormSource>;
+  template: PipelineTemplate;
+  logger: AppLogger;
 }
 
 /** 构造 Express 应用（不监听端口，便于测试） */
-export function createApp(deps: ServerDeps) {  const app = express();
+export function createApp(deps: ServerDeps) {
+  const app = express();
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/healthz", (_req, res) => {
@@ -72,6 +79,16 @@ export function createApp(deps: ServerDeps) {  const app = express();
     }
   });
 
+  // ── 标准接口触发 ───────────────────────────────────────────────────────────
+  app.post("/api/pipelines", (req: Request, res: Response) => {
+    try {
+      const submission = deps.sources.api.parse(req.body);
+      void runAndRespond(deps, submission, res);
+    } catch (err) {
+      respondError(res, err);
+    }
+  });
+
   // ── 流水线 API ─────────────────────────────────────────────────────────────
   app.get("/api/pipelines", (_req, res) => {
     const list = deps.store.list().map(summarize);
@@ -106,16 +123,41 @@ export function createApp(deps: ServerDeps) {  const app = express();
     res.json({ id: p.id, events: p.events });
   });
 
-  // ── 标准接口触发 ───────────────────────────────────────────────────────────
-  app.post("/api/pipelines", (req: Request, res: Response) => {
+  // ── 流程模板 ───────────────────────────────────────────────────────────────
+  app.get("/api/templates", (_req, res) => {
+    res.json({
+      name: deps.template.name,
+      stages: deps.template.stages.map((s) => ({
+        id: s.id,
+        agent: s.agent,
+        onSuccess: s.onSuccess,
+        reworkTarget: s.reworkTarget,
+        ops: s.ops,
+        multi: s.multi,
+      })),
+    });
+  });
+
+  // ── 日志查询 ───────────────────────────────────────────────────────────────
+  app.get("/api/logs", (req, res) => {
     try {
-      const submission = deps.sources.api.parse(req.body);
-      void runAndRespond(deps, submission, res);
+      const lines = Math.min(Math.max(Number(req.query.lines ?? 100), 1), 2000);
+      const pipelineId = typeof req.query.pipelineId === "string" ? req.query.pipelineId : undefined;
+      const level = typeof req.query.level === "string" ? req.query.level : undefined;
+      const logFile = join(deps.cfg.logsDir, "pipeline.log");
+      const entries = tailLogFile(logFile, lines);
+      const filtered = entries.filter((e) => {
+        if (pipelineId && e.pipelineId !== pipelineId) return false;
+        if (level && e.level !== level) return false;
+        return true;
+      });
+      res.json({ logFile, total: filtered.length, entries: filtered });
     } catch (err) {
-      respondError(res, err);
+      respondError(res, err, 500);
     }
   });
 
+  // ── 验收与重试 ─────────────────────────────────────────────────────────────
   app.post("/api/pipelines/:id/accept", async (req, res) => {
     try {
       const { accepted, by, note } = (req.body ?? {}) as {
@@ -145,6 +187,32 @@ export function createApp(deps: ServerDeps) {  const app = express();
   });
 
   return app;
+}
+
+/** 读取日志文件末尾 N 行并解析为 JSON 条目 */
+function tailLogFile(file: string, lines: number): Array<Record<string, unknown> & { level?: string; pipelineId?: string }> {
+  const st = statSync(file);
+  const size = st.size;
+  const maxRead = 512 * 1024; // 最多读 512KB 尾部
+  const start = Math.max(0, size - maxRead);
+  const buf = Buffer.alloc(size - start);
+  const fd = openSync(file, "r");
+  try {
+    readSync(fd, buf, 0, buf.length, start);
+  } finally {
+    closeSync(fd);
+  }
+  const rows = buf.toString("utf8").split("\n").filter((l) => l.trim() !== "");
+  const tail = rows.slice(-lines);
+  return tail
+    .map((line) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown> & { level?: string; pipelineId?: string };
+      } catch {
+        return { raw: line.slice(0, 500) };
+      }
+    })
+    .filter((e) => e && typeof e === "object");
 }
 
 function summarize(p: Pipeline) {

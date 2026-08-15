@@ -11,7 +11,7 @@ const COMMON_RULES = `
 `;
 
 export interface RolePrompt {
-  role: "evaluator" | "developer" | "tester" | "ops" | "acceptance";
+  role: "evaluator" | "developer" | "tester" | "reviewer" | "ops" | "acceptance";
   /** 角色定位 */
   persona: string;
   /** 输出 JSON schema 描述 */
@@ -61,6 +61,18 @@ export const ROLE_PROMPTS: Record<RolePrompt["role"], RolePrompt> = {
   "coverage": string,             // 覆盖说明（需求验收点覆盖情况）
   "issues": string[],             // 失败项/问题清单（可为空数组）
   "evidence": string[]            // 测试证据（可为空数组）
+}`,
+  },
+  reviewer: {
+    role: "reviewer",
+    persona: `你是「代码评审 Agent」。负责对开发产出进行质量评审（独立于开发与测试）：
+- 结合需求与开发产出（artifactsDir 下的方案/变更说明）评审设计合理性、变更完整性、潜在风险；
+- 给出明确评审结论：通过（approved）或打回（不通过，附问题清单）。`,
+    outputSchema: `{
+  "approved": boolean,            // 评审是否通过
+  "summary": string,              // 评审总结
+  "issues": string[],             // 问题清单（可为空数组）
+  "suggestions": string[]         // 改进建议（可为空数组）
 }`,
   },
   ops: {

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import type { AgentTask } from "../types.js";
+import type { AppLogger } from "../logger.js";
 
 export interface RunResult {
   exitCode: number;
@@ -51,11 +52,17 @@ export class DshRunner {
     private readonly opts: {
       cli: string;
       timeoutMs: number;
+      logger?: AppLogger;
     },
   ) {}
 
   async run(task: AgentTask, cwd: string): Promise<RunResult> {
     mkdirSync(cwd, { recursive: true });
+    const startedAt = Date.now();
+    this.opts.logger?.info(
+      { pipelineId: task.pipelineId, stage: task.stage, role: task.role, cli: this.opts.cli },
+      "agent run started",
+    );
     const payload = JSON.stringify(task);
     return new Promise<RunResult>((resolvePromise, rejectPromise) => {
       const child = spawn(this.opts.cli, ["--profile", "headless", payload], {
@@ -71,6 +78,7 @@ export class DshRunner {
         if (settled) return;
         settled = true;
         child.kill("SIGKILL");
+        this.opts.logger?.error({ pipelineId: task.pipelineId, stage: task.stage, role: task.role, timeoutMs: this.opts.timeoutMs }, "agent run timeout");
         rejectPromise(
           new Error(`DSH agent 超时（${this.opts.timeoutMs}ms）：pipeline=${task.pipelineId} stage=${task.stage}`),
         );
@@ -93,6 +101,11 @@ export class DshRunner {
         settled = true;
         clearTimeout(timer);
         const parsed = extractJson(stdout) as Record<string, unknown> | null;
+        const durationMs = Date.now() - startedAt;
+        this.opts.logger?.info(
+          { pipelineId: task.pipelineId, stage: task.stage, role: task.role, exitCode: code, durationMs, parsedOk: parsed !== null },
+          "agent run finished",
+        );
         resolvePromise({ exitCode: code ?? -1, stdout, stderr, parsed });
       });
     });

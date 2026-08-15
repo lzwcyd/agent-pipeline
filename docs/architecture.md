@@ -67,16 +67,33 @@
 - ops → `{deployed, mode, namespace, revision, url, evidence[], warnings[]}`（部署与回滚共用，`context.ops.action` 区分）
 - acceptance → `{accepted, verdicts[], issues[], note}`
 
+### 2.2.1 可定制编排（流程模板）
+
+流程由 `PipelineTemplate`（JSON）定义：阶段序列 + 每阶段 agent 角色 + 流转（onSuccess/reworkTarget/ops/multi）。默认模板与内置行为一致；`PIPELINE_TEMPLATE` 指向自定义模板即可增删 agent 节点。模板加载时校验引用完整性；自定义阶段（非内置）走通用判定 `genericVerdict(role, output)` 并按其角色语义推进/打回/拒绝。多 Agent 并行（`multi.services`）见 §2.5。
+
 ### 2.3 状态机、持久化与历史
 
-状态与迁移见 README。持久化两处：
+状态与迁移见 README。内置阶段迁移由 TRANSITIONS 约束，自定义阶段由模板声明流转（transition 的 allowed 参数）。持久化两处：
 
 - `data/pipelines/<id>.json`：流水线全量快照（事件日志 + 各阶段 agent 结果 + **executions 历史** + 产物清单），原子写（tmp+rename）。
 - `data/artifacts/<id>/<stage>/`：agent 工作目录，产出文件（dev-plan.md、rendered-manifests.yaml 等）由网关登记进流水线。
 
 **历史执行信息**：每次阶段执行都会追加一条 `PipelineExecution {stage, round, status, startedAt, finishedAt, durationMs, output?, error?}` 到 `executions[]`——打回重跑不覆盖历史，`round` 递增。`buildHistory()`（`src/pipeline/history.ts`）派生结构化历史视图（触发信息 + 当前状态 + executions + events + 各阶段统计），供 `GET /api/pipelines/:id/history` 与 CLI `pipelines history <id>` 使用。
 
-### 2.4 编排器（Orchestrator）
+### 2.4 日志
+
+pino 结构化 JSON 日志：stdout + `data/logs/pipeline.log`。关键事件（流水线创建、阶段开始/完成、agent 调用开始/结束含耗时与退出码、失败/重试）都带 `pipelineId/stage/role` 字段；`GET /api/logs` 支持按 `pipelineId`/`level` 过滤尾部日志。
+
+### 2.5 多 Agent 并行联调
+
+模板阶段配置 `multi: {services: [...]}` 后，该阶段分两轮并行执行：
+1. **契约轮**：每服务一个 agent 实例输出接口契约；
+2. **汇总广播**：网关收集全部契约注入 `context.teamContracts`（agent 间"通信"）；
+3. **实现轮**：每服务基于团队契约产出实现方案。
+
+子任务输出不可解析时自动带提示重试一次；结果按服务聚合到 `agents[stage].output.services`，产物按服务子目录隔离。
+
+### 2.6 编排器（Orchestrator）
 
 - `startSubmission()`：建流水线，**异步驱动**（webhook 秒回 202）。
 - `runStage()`：校验迁移 → 组装任务 → 调用 runner → 解析输出 → 按角色推进。
