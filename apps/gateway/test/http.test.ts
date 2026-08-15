@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -84,6 +84,62 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean };
     expect(body.ok).toBe(true);
+  });
+
+  it("GET / 返回 Web 控制台页面", async () => {
+    const res = await fetch(`${h.baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type") ?? "").toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("agent-pipeline 控制台");
+    expect(html).toContain("tab-trigger");
+  });
+
+  it("GET /api/config 返回脱敏配置", async () => {
+    const res = await fetch(`${h.baseUrl}/api/config`);
+    expect(res.status).toBe(200);
+    const cfg = (await res.json()) as {
+      template: string;
+      port: number;
+      sources: Record<string, boolean>;
+      pipelineMode: string;
+    };
+    expect(cfg.template).toBe("default");
+    expect(cfg.sources.mock).toBe(true);
+    expect(cfg.sources.api).toBe(true);
+    expect(cfg.pipelineMode).toBeTruthy();
+  });
+
+  it("POST /api/templates 保存自定义模板（写 config/pipelines/custom.json），非法模板 400", async () => {
+    const target = join(REPO_ROOT, "config", "pipelines", "custom.json");
+    const existed = existsSync(target);
+    try {
+      const res = await fetch(`${h.baseUrl}/api/templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "web-test", stages: DEFAULT_TEMPLATE.stages }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: boolean; path: string };
+      expect(body.ok).toBe(true);
+      expect(existsSync(target)).toBe(true);
+    } finally {
+      if (!existed) rmSync(target, { force: true });
+    }
+
+    // 非法 agent 角色 → 400
+    const bad = await fetch(`${h.baseUrl}/api/templates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "bad",
+        stages: [
+          { id: "a", agent: "not-a-role", onSuccess: "b" },
+          { id: "b", agent: "developer", onSuccess: "done" },
+        ],
+      }),
+    });
+    expect(bad.status).toBe(400);
   });
 
   it("POST /api/pipelines 标准接口触发 → 202 → 全链路 done", async () => {

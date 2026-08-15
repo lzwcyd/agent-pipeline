@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agent-pipeline 控制台</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>agent-pipeline 控制台</h1>
+    <span id="cfg-badge" class="badge"></span>
+  </header>
+
+  <nav>
+    <button data-tab="trigger" class="tab-btn active">⚡ 触发</button>
+    <button data-tab="config" class="tab-btn">⚙️ 配置</button>
+    <button data-tab="progress" class="tab-btn">📊 进度与日志</button>
+  </nav>
+
+  <main>
+    <!-- ═══════════ 触发 ═══════════ -->
+    <section id="tab-trigger" class="tab active">
+      <div class="card">
+        <h2>发起新流水线</h2>
+        <form id="trigger-form">
+          <label>需求标题 *</label>
+          <input name="title" required placeholder="例如：管理后台增加报表导出功能" />
+
+          <label>需求描述</label>
+          <textarea name="description" rows="4" placeholder="描述需求背景、验收点、约束条件…"></textarea>
+
+          <div class="grid2">
+            <div>
+              <label>提交人</label>
+              <input name="submitter" value="产品" />
+            </div>
+            <div>
+              <label>优先级</label>
+              <select name="priority">
+                <option value="">（不指定）</option>
+                <option>P0</option>
+                <option selected>P1</option>
+                <option>P2</option>
+              </select>
+            </div>
+          </div>
+
+          <label>触发级策略 policy（JSON，可选）</label>
+          <textarea name="policy" rows="3" placeholder='{"acceptanceFailure": "rollback", "maxRework": 3}'></textarea>
+
+          <label>附加字段 fields（JSON，可选）</label>
+          <textarea name="fields" rows="3" placeholder='{"期望上线": "下周五"}'></textarea>
+
+          <button type="submit" class="primary">🚀 提交需求（POST /api/pipelines）</button>
+        </form>
+        <div id="trigger-result" class="result"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════ 配置 ═══════════ -->
+    <section id="tab-config" class="tab">
+      <div class="card">
+        <h2>当前生效配置</h2>
+        <table id="config-table" class="kv"></table>
+      </div>
+      <div class="card">
+        <h2>流程模板（可定制编排：增删 Agent 节点）</h2>
+        <p class="hint">
+          修改下方 JSON 后保存为 <code>config/pipelines/custom.json</code>；
+          重启网关并设置 <code>PIPELINE_TEMPLATE=config/pipelines/custom.json</code> 生效。
+          阶段字段：<code>id / agent / onSuccess / reworkTarget? / ops? / multi?</code>
+        </p>
+        <textarea id="template-editor" rows="20" spellcheck="false"></textarea>
+        <div class="row">
+          <button id="template-save" class="primary">💾 保存自定义模板</button>
+          <span id="template-msg" class="result inline"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ 进度与日志 ═══════════ -->
+    <section id="tab-progress" class="tab">
+      <div class="card">
+        <h2>流水线列表 <button id="refresh" class="ghost">⟳ 刷新</button></h2>
+        <table id="pipeline-table">
+          <thead>
+            <tr><th>ID</th><th>标题</th><th>状态</th><th>触发</th><th>打回</th><th>更新时间</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="detail"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

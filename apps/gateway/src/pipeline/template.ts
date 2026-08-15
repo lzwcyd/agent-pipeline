@@ -59,22 +59,20 @@ export const DEFAULT_TEMPLATE: PipelineTemplate = {
 const VALID_AGENTS: AgentRole[] = ["evaluator", "developer", "tester", "reviewer", "ops", "acceptance"];
 const TERMINALS = ["done", "rejected", "failed"];
 
-/** 加载流程模板：缺省内置；PIPELINE_TEMPLATE 指向 JSON 文件时加载并校验 */
-export function loadTemplate(filePath?: string): PipelineTemplate {
-  if (!filePath) return DEFAULT_TEMPLATE;
-  const raw = readFileSync(filePath, "utf8");
-  const parsed = JSON.parse(raw) as Partial<PipelineTemplate>;
-  if (!parsed.name || !Array.isArray(parsed.stages) || parsed.stages.length === 0) {
-    throw new Error(`流程模板无效：${filePath}（需要 name 与非空 stages）`);
-  }
+/** 从对象构造并校验模板（供文件加载与 Web 控制台复用） */
+export function parseTemplate(name: string, stages: unknown): PipelineTemplate {
+  if (!name || typeof name !== "string") throw new Error("流程模板缺少 name");
+  if (!Array.isArray(stages) || stages.length === 0) throw new Error("流程模板需要非空 stages 数组");
+  const rawStages = stages as Array<Partial<TemplateStage>>;
   const ids = new Set<string>();
-  for (const s of parsed.stages) {
+  for (const s of rawStages) {
     if (!s.id || !s.agent) throw new Error(`流程模板阶段缺少 id/agent：${JSON.stringify(s)}`);
     if (ids.has(s.id)) throw new Error(`流程模板阶段 id 重复：${s.id}`);
     ids.add(s.id);
   }
-  for (const s of parsed.stages) {
-    if (!VALID_AGENTS.includes(s.agent)) {
+  for (const s of rawStages) {
+    const agent = s.agent as AgentRole | undefined;
+    if (!agent || !VALID_AGENTS.includes(agent)) {
       throw new Error(`流程模板阶段 ${s.id} 的 agent 非法：${s.agent}（可选：${VALID_AGENTS.join("/")}）`);
     }
     if (s.onSuccess && !ids.has(s.onSuccess) && !TERMINALS.includes(s.onSuccess)) {
@@ -84,5 +82,13 @@ export function loadTemplate(filePath?: string): PipelineTemplate {
       throw new Error(`流程模板阶段 ${s.id} 的 reworkTarget 引用未定义阶段：${s.reworkTarget}`);
     }
   }
-  return { name: parsed.name, stages: parsed.stages as TemplateStage[] };
+  return { name, stages: rawStages as TemplateStage[] };
+}
+
+/** 加载流程模板：缺省内置；PIPELINE_TEMPLATE 指向 JSON 文件时加载并校验 */
+export function loadTemplate(filePath?: string): PipelineTemplate {
+  if (!filePath) return DEFAULT_TEMPLATE;
+  const raw = readFileSync(filePath, "utf8");
+  const parsed = JSON.parse(raw) as Partial<PipelineTemplate>;
+  return parseTemplate(parsed.name ?? "", parsed.stages);
 }

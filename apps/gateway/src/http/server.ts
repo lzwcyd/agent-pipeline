@@ -1,4 +1,5 @@
-import { openSync, readSync, statSync, closeSync } from "node:fs";
+import { openSync, readSync, statSync, closeSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import express, { type Request, type Response } from "express";
 import type { EnvConfig } from "../config.js";
@@ -7,6 +8,7 @@ import { FormParseError } from "../forms/index.js";
 import type { Orchestrator } from "../pipeline/orchestrator.js";
 import type { PipelineStore } from "../pipeline/store.js";
 import type { PipelineTemplate } from "../pipeline/template.js";
+import { parseTemplate } from "../pipeline/template.js";
 import type { Pipeline } from "../types.js";
 import { buildHistory } from "../pipeline/history.js";
 import type { AppLogger } from "../logger.js";
@@ -24,9 +26,61 @@ export interface ServerDeps {
 export function createApp(deps: ServerDeps) {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
+  const publicDir = join(deps.cfg.repoRoot, "apps", "gateway", "public");
 
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true, time: new Date().toISOString() });
+  });
+
+  // ── 静态 Web 控制台 ─────────────────────────────────────────────────────────
+  app.use(express.static(publicDir));
+  app.get("/", (_req, res) => {
+    res.sendFile(join(publicDir, "index.html"));
+  });
+
+  // ── 脱敏配置查看（供 Web 控制台展示）───────────────────────────────────────
+  app.get("/api/config", (_req, res) => {
+    res.json({
+      template: deps.template.name,
+      port: deps.cfg.PORT,
+      autoAccept: deps.cfg.AUTO_ACCEPT,
+      acceptanceFailurePolicy: deps.cfg.ACCEPTANCE_FAILURE_POLICY,
+      maxRework: deps.cfg.MAX_REWORK,
+      pipelineMode: deps.cfg.PIPELINE_MODE,
+      opsMode: deps.cfg.OPS_MODE,
+      logLevel: deps.cfg.LOG_LEVEL,
+      sources: {
+        mock: deps.sources.mock.isConfigured(),
+        feishu: deps.sources.feishu.isConfigured(),
+        dingtalk: deps.sources.dingtalk.isConfigured(),
+        api: deps.sources.api.isConfigured(),
+      },
+      kubectlAvailable: checkKubectl(),
+      webUi: true,
+    });
+  });
+
+  // ── 保存自定义流程模板（Web 控制台配置页）─────────────────────────────────
+  app.post("/api/templates", (req: Request, res: Response) => {
+    try {
+      const { name, stages } = (req.body ?? {}) as { name?: string; stages?: unknown };
+      if (!name || !Array.isArray(stages)) {
+        res.status(400).json({ error: "需要 name（string）与 stages（数组）" });
+        return;
+      }
+      const parsed = parseTemplate(name, stages);
+      const target = join(deps.cfg.repoRoot, "config", "pipelines", "custom.json");
+      writeFileSync(target, JSON.stringify(parsed, null, 2), "utf8");
+      deps.logger.info({ template: parsed.name, file: target }, "custom template saved via web UI");
+      res.json({
+        ok: true,
+        name: parsed.name,
+        path: "config/pipelines/custom.json",
+        note: "模板已保存。重启网关并设置 PIPELINE_TEMPLATE=config/pipelines/custom.json 生效（当前进程仍使用原模板）。",
+      });
+    } catch (err) {
+      respondError(res, err);
+    }
   });
 
   // ── 飞书事件订阅 ───────────────────────────────────────────────────────────
@@ -253,6 +307,16 @@ function respondError(res: Response, err: unknown, status = 400) {
     return;
   }
   res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+}
+
+/** 探测 kubectl 是否可用（供 /api/config 展示部署模式） */
+function checkKubectl(): boolean {
+  try {
+    const r = spawnSync("kubectl", ["version", "--client", "-o", "json"], { timeout: 5000, encoding: "utf8" });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** 在指定端口启动服务 */
