@@ -86,6 +86,32 @@ node scripts/simulate-submit.mjs --title "管理后台增加报表导出功能" 
 bash scripts/demo-run.sh
 ```
 
+## 多开发 Agent 并行联调
+
+分布式系统需求往往涉及多个服务，开发阶段支持 `multi` 配置：**一个阶段拆成多个 Agent 实例并行开发，并通过网关中介交换接口契约（模拟团队联调）**。
+
+```jsonc
+// config/pipelines/multi-dev.json（示例：order-service / payment-service 两个服务并行开发）
+{
+  "id": "dev_in_progress",
+  "agent": "developer",
+  "onSuccess": "testing",
+  "multi": { "services": ["order-service", "payment-service"] }
+}
+```
+
+执行机制（两轮并行）：
+1. **契约轮**：每个服务一个开发 Agent 并行输出接口契约（`{service, contract}`）；
+2. **汇总广播**：网关收集全部契约，注入每个 Agent 的 `context.teamContracts`（Agent 间"通信"载体）；
+3. **实现轮**：每个服务基于团队契约并行产出实现方案，确保接口相互匹配。
+
+- 结果按服务聚合：`agents.dev_in_progress.output.services.<service>`，`contracts` 为契约汇总；
+- 产物按服务隔离：`data/artifacts/<id>/dev_in_progress/<service>/`；
+- 子任务输出不可解析时自动带提示重试一次；
+- 后续阶段（测试/验收）会基于多服务交付评审——测试 Agent 可发现跨服务契约矛盾并打回开发对齐。
+
+> 真实验证：multi-dev 模板全链路跑通过一次真实需求——测试 Agent 第一轮发现两个服务契约矛盾（状态枚举/字段名不一致）→ 打回开发对齐 → 复审通过 → 部署 → 验收 → 生产。详细说明见 [docs/usage.md](docs/usage.md#5-多开发-agent-并行联调分布式系统)。
+
 ## 标准触发结构与接口触发
 
 所有触发源（表单、API、CLI…）都归一化为同一标准结构，进入同一条流水线：
