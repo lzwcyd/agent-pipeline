@@ -46,6 +46,7 @@
 │       ├── pipeline/        # 状态机、流程模板、持久化、编排器、历史视图
 │       ├── agents/          # DSH runner（含日志）、角色 prompt、任务组装
 │       ├── notify/          # 通知器：console / 飞书机器人 / 钉钉机器人
+│       ├── public/          # Web 控制台（触发/配置/进度与日志）
 │       └── http/ cli/       # webhook+API、命令行
 ├── config/pipelines/        # 流程模板（default / with-code-review / multi-dev 示例）
 ├── profiles/headless/       # DSH headless profile（agent 运行时，需安装到 ~/.dsh）
@@ -151,7 +152,20 @@ curl -X POST http://127.0.0.1:3081/api/pipelines \
 
 表单触发同样支持触发级策略：在收集单字段里放 `_policy` 键即可（如 `{"_policy": {"acceptanceFailure": "rework"}}`）。
 
+## Web 控制台
+
+网关内置一个 Web 控制台（无需额外构建，浏览器访问即可）：
+
+```
+http://127.0.0.1:3081/
+```
+
+- **触发**：表单填写需求（标题/描述/提交人/优先级/fields/policy）→ 直接发起流水线；
+- **配置**：查看当前生效配置（模板/模式/策略/触发源），在线编辑流程模板并保存为 `config/pipelines/custom.json`（重启 + `PIPELINE_TEMPLATE` 生效）；
+- **进度与日志**：流水线列表（5s 自动刷新）、事件流时间线、执行历史（含打回轮次与耗时）、各阶段 Agent 输出、按流水线过滤的实时日志，以及验收通过/拒绝、失败重试操作按钮。
+
 ## 流水线 API
+
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
