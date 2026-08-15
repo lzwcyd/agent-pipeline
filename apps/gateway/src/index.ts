@@ -1,5 +1,6 @@
-import "dotenv/config";
-import { loadConfig } from "./config.js";
+import { join } from "node:path";
+import { config as dotenvConfig } from "dotenv";
+import { loadConfig, resolveRepoRoot } from "./config.js";
 import { DshRunner } from "./agents/dsh-runner.js";
 import { createFormSources } from "./forms/index.js";
 import { PipelineStore } from "./pipeline/store.js";
@@ -10,6 +11,8 @@ import { createLogger } from "./logger.js";
 import { buildCli } from "./cli/index.js";
 
 async function main() {
+  // .env 位于仓库根（pnpm 会把脚本 cwd 设到包目录，需显式定位）
+  dotenvConfig({ path: join(resolveRepoRoot(), ".env") });
   const cfg = loadConfig();
   const logger = createLogger({ level: cfg.LOG_LEVEL, logsDir: cfg.logsDir });
   const template = loadTemplate(cfg.pipelineTemplateFile);
