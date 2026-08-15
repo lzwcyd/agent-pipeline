@@ -1,6 +1,6 @@
 # agent-pipeline：多 Agent 研发交付流水线
 
-监听 **钉钉 / 飞书收集单** 的提交事件，自动驱动一条完整的研发流水线：
+从需求触发到生产交付的多 Agent 研发流水线：监听 **钉钉/飞书收集单**（或标准接口）提交的需求，自动编排 **需求评估 → 开发（可多 Agent 并行联调）→ 测试 → 测试环境部署 → 产品验收 → 生产部署** 等 Agent 阶段：
 
 ```
 触发（钉钉/飞书表单 · 标准接口 · 模拟器）
@@ -36,11 +36,6 @@
 - **开发模式**：`PIPELINE_MODE=simulation`（默认）产出方案文档；`real` 模式要求真实代码与真实部署。
 
 **文档**：[部署文档](docs/deployment.md) · [使用文档](docs/usage.md) · [架构设计](docs/architecture.md)
-
-- **Agent 运行时**：DeepSeek Harness（DSH）`headless` profile —— 每个角色一次 `dsh --profile headless "<task>"` 调用，输出严格 JSON 驱动状态机。
-- **表单接入**：可插拔适配器。`mock`（模拟器）随时可用；`feishu`/`dingtalk` 适配器已实现验签与字段归一化，配好凭证即可直连。
-- **部署**：Kubernetes（kubectl 模式），无集群时自动降级为 simulated 模式（输出完整部署计划与证据）。
-- **开发模式**：`PIPELINE_MODE=simulation`（默认）产出方案文档；`real` 模式要求真实代码与真实部署。
 
 ## 目录结构
 
