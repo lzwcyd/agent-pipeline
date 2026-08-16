@@ -29,6 +29,15 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 });
 
 /* ── 触发页签 ─────────────────────────────────────────────── */
+async function loadTemplateSelect() {
+  try {
+    const { default: defName, templates } = await api("/api/templates");
+    const sel = $("#template-select");
+    sel.innerHTML = `<option value="">（默认模板：${esc(defName)}）</option>` +
+      templates.filter((t) => t.name !== defName).map((t) => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
+  } catch { /* ignore */ }
+}
+
 $("#trigger-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target;
@@ -38,6 +47,7 @@ $("#trigger-form").addEventListener("submit", async (e) => {
     submitter: f.submitter.value.trim() || "产品",
   };
   if (f.priority.value) payload.priority = f.priority.value;
+  if (f.template.value) payload.template = f.template.value;
   try {
     if (f.fields.value.trim()) payload.fields = JSON.parse(f.fields.value);
     if (f.policy.value.trim()) payload.policy = JSON.parse(f.policy.value);
@@ -67,7 +77,7 @@ function showResult(sel, text, isErr) {
 async function loadConfig() {
   try {
     const [cfg, tpl] = await Promise.all([api("/api/config"), api("/api/templates")]);
-    $("#cfg-badge").textContent = `模板：${cfg.template} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
+    $("#cfg-badge").textContent = `默认模板：${cfg.template} · 模板数：${tpl.templates.length} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
     const rows = [
       ["流程模板", cfg.template],
       ["流水线模式", cfg.pipelineMode],
@@ -81,27 +91,88 @@ async function loadConfig() {
     $("#config-table").innerHTML = rows
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`)
       .join("");
-    $("#template-editor").value = JSON.stringify(tpl, null, 2);
+    renderTemplateList(tpl);
   } catch (err) {
     $("#cfg-badge").textContent = "配置加载失败";
   }
 }
 
+/* 模板列表管理 */
+let currentTpl = null;
+
+function renderTemplateList(tpl) {
+  currentTpl = tpl;
+  const sel = $("#template-list");
+  sel.innerHTML = tpl.templates
+    .map((t) => `<option value="${esc(t.name)}" ${t.name === tpl.default ? "selected" : ""}>${esc(t.name)}${t.name === tpl.default ? "（默认）" : ""}${t.builtin ? "（内置）" : ""}</option>`)
+    .join("");
+  const def = tpl.templates.find((t) => t.name === tpl.default) || tpl.templates[0];
+  if (def) selectTemplate(def);
+  // 触发页模板下拉同步
+  loadTemplateSelect();
+}
+
+function selectTemplate(t) {
+  $("#template-name").value = t.name;
+  $("#template-name").disabled = t.builtin; // 内置 default 不可改名/覆盖
+  $("#template-editor").value = JSON.stringify(t.stages, null, 2);
+  $("#template-delete").disabled = t.builtin;
+  $("#template-delete").dataset.name = t.name;
+}
+
+$("#template-list").addEventListener("change", async (e) => {
+  const name = e.target.value;
+  const t = currentTpl?.templates.find((x) => x.name === name);
+  if (t) selectTemplate(t);
+});
+
+$("#template-new").addEventListener("click", () => {
+  $("#template-name").value = "my-template";
+  $("#template-name").disabled = false;
+  $("#template-editor").value = JSON.stringify(
+    (currentTpl?.templates.find((t) => t.name === currentTpl.default) || currentTpl?.templates[0] || { stages: [] }).stages,
+    null, 2,
+  );
+  $("#template-delete").disabled = true;
+});
+
 $("#template-save").addEventListener("click", async () => {
   const msg = $("#template-msg");
+  const name = $("#template-name").value.trim();
+  let stages;
+  try {
+    stages = JSON.parse($("#template-editor").value);
+  } catch (err) {
+    msg.textContent = `❌ 模板 JSON 解析失败：${err.message}`;
+    msg.className = "result inline err";
+    return;
+  }
   msg.textContent = "保存中…";
   try {
-    const obj = JSON.parse($("#template-editor").value);
     const r = await api("/api/templates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(obj),
+      body: JSON.stringify({ name, stages }),
     });
     msg.textContent = `✅ ${r.note}`;
     msg.className = "result inline ok";
+    loadConfig();
   } catch (err) {
     msg.textContent = `❌ ${err.message}`;
     msg.className = "result inline err";
+  }
+});
+
+$("#template-delete").addEventListener("click", async () => {
+  const name = $("#template-delete").dataset.name;
+  if (!name) return;
+  if (!confirm(`确定删除模板「${name}」？删除后无法恢复。`)) return;
+  try {
+    await api(`/api/templates/${name}`, { method: "DELETE" });
+    loadConfig();
+    loadTemplateSelect();
+  } catch (err) {
+    alert(`删除失败：${err.message}`);
   }
 });
 
@@ -238,4 +309,5 @@ function startLogPoll(id) {
     $("#cfg-badge").textContent = `模板：${cfg.template} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
   } catch { /* 服务未完全就绪 */ }
   loadPipelines();
+  loadTemplateSelect();
 })();

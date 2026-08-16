@@ -14,6 +14,8 @@ export interface TriggerMeta {
 
 /** 触发级流水线策略（可覆盖环境变量默认值） */
 export interface SubmissionPolicy {
+  /** 使用的流程模板名（默认取环境变量 DEFAULT_TEMPLATE/PIPELINE_TEMPLATE 或 default） */
+  template?: string;
   /** 验收失败时的处理：rollback（回滚测试环境后打回开发）| rework（直接打回开发）| reject（直接终止） */
   acceptanceFailure?: "rollback" | "rework" | "reject";
   /** 验收预检通过后是否自动放行（覆盖 AUTO_ACCEPT） */

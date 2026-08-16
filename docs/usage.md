@@ -88,7 +88,13 @@ CLI 等价命令：`corepack pnpm gateway pipelines list|show <id>|history <id>`
 { "需求标题": "...", "_policy": { "acceptanceFailure": "rework" } }
 ```
 
-## 4. 定制研发流程（流程模板）
+## 4. 模板平台：定制研发流程（多模板并存）
+
+平台支持**多个流程模板同时使用、互不干扰**：注册目录 `config/pipelines/*.json` 中的模板启动时全量注册（内置 `default` 恒可用），触发时按需求选择模板，每条流水线独立绑定（`pipeline.templateName`）。
+
+- **选择模板**：API 触发顶层 `template` 字段或 `policy.template`；Web 控制台触发页下拉选择；不指定则用默认模板。
+- **动态注册**：Web 控制台保存/编辑模板立即生效（写入 `config/pipelines/<name>.json`），无需重启；同名保存=更新；内置 default 不可覆盖/删除。
+- **互不干扰**：不同模板的流水线并行运行，各自按自己的阶段序列/角色/流转执行，数据按 pipelineId 隔离。
 
 模板定义"阶段序列 + 每阶段的 agent 角色 + 流转关系"，改模板即可增删 agent 节点，无需改代码。
 
@@ -110,9 +116,15 @@ CLI 等价命令：`corepack pnpm gateway pipelines list|show <id>|history <id>`
 ```
 
 ```bash
-PIPELINE_TEMPLATE=config/pipelines/my.json corepack pnpm gateway serve
-curl http://127.0.0.1:3081/api/templates   # 查看当前生效模板
-corepack pnpm gateway template             # CLI 查看
+# 触发时选择模板（API）
+curl -X POST http://127.0.0.1:3081/api/pipelines -H 'Content-Type: application/json' \
+  -d '{"title": "...", "template": "with-code-review"}'
+# 或 policy.template 与策略一起
+# 查看全部模板
+curl http://127.0.0.1:3081/api/templates
+corepack pnpm gateway templates   # CLI 列表
+corepack pnpm gateway template <name>   # CLI 查看详情
+# 默认模板（未指定时使用）：启动环境变量 PIPELINE_TEMPLATE=<name> 或 PIPELINE_TEMPLATE=<文件路径>（兼容旧配置）
 ```
 
 **要点**：

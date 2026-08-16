@@ -7,7 +7,7 @@ import type { FormSource } from "../forms/index.js";
 import type { Notifier } from "../notify/notifier.js";
 import { startServer } from "../http/server.js";
 import { buildHistory } from "../pipeline/history.js";
-import type { PipelineTemplate } from "../pipeline/template.js";
+import type { TemplateRegistry } from "../pipeline/template.js";
 import type { AppLogger } from "../logger.js";
 
 export interface CliDeps {
@@ -18,7 +18,8 @@ export interface CliDeps {
   sources: Record<"mock" | "feishu" | "dingtalk" | "api", FormSource>;
   notifier: Notifier;
   logger: AppLogger;
-  template: PipelineTemplate;
+  registry: TemplateRegistry;
+  defaultTemplate: string;
 }
 
 export function buildCli(deps: CliDeps): Command {
@@ -71,11 +72,22 @@ export function buildCli(deps: CliDeps): Command {
     });
 
   program
-    .command("template")
-    .description("查看当前流程模板（阶段序列与 agent 配置）")
+    .command("templates")
+    .description("列出全部流程模板（平台多模板）")
     .action(() => {
+      for (const t of deps.registry.list()) {
+        // eslint-disable-next-line no-console
+        console.log(`- ${t.name}${t.name === deps.defaultTemplate ? "（默认）" : ""}${t.name === "default" ? "（内置）" : ""}：${t.stages.map((s) => s.id).join(" → ")}`);
+      }
+    });
+
+  program
+    .command("template <name>")
+    .description("查看指定模板详情")
+    .action((name: string) => {
+      const t = deps.registry.get(name);
       // eslint-disable-next-line no-console
-      console.log(JSON.stringify(deps.template, null, 2));
+      console.log(JSON.stringify(t, null, 2));
     });
 
   const pipelines = program.command("pipelines").description("流水线管理");

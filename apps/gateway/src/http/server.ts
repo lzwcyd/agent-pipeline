@@ -7,8 +7,7 @@ import type { FormSource } from "../forms/index.js";
 import { FormParseError } from "../forms/index.js";
 import type { Orchestrator } from "../pipeline/orchestrator.js";
 import type { PipelineStore } from "../pipeline/store.js";
-import type { PipelineTemplate } from "../pipeline/template.js";
-import { parseTemplate } from "../pipeline/template.js";
+import type { TemplateRegistry } from "../pipeline/template.js";
 import type { Pipeline } from "../types.js";
 import { buildHistory } from "../pipeline/history.js";
 import type { AppLogger } from "../logger.js";
@@ -18,7 +17,8 @@ export interface ServerDeps {
   store: PipelineStore;
   orchestrator: Orchestrator;
   sources: Record<"mock" | "feishu" | "dingtalk" | "api", FormSource>;
-  template: PipelineTemplate;
+  registry: TemplateRegistry;
+  defaultTemplate: string;
   logger: AppLogger;
 }
 
@@ -41,7 +41,7 @@ export function createApp(deps: ServerDeps) {
   // ── 脱敏配置查看（供 Web 控制台展示）───────────────────────────────────────
   app.get("/api/config", (_req, res) => {
     res.json({
-      template: deps.template.name,
+      template: deps.defaultTemplate,
       port: deps.cfg.PORT,
       autoAccept: deps.cfg.AUTO_ACCEPT,
       acceptanceFailurePolicy: deps.cfg.ACCEPTANCE_FAILURE_POLICY,
@@ -60,7 +60,7 @@ export function createApp(deps: ServerDeps) {
     });
   });
 
-  // ── 保存自定义流程模板（Web 控制台配置页）─────────────────────────────────
+  // ── 保存流程模板（动态注册，立即生效；同名=更新）──────────────────────────
   app.post("/api/templates", (req: Request, res: Response) => {
     try {
       const { name, stages } = (req.body ?? {}) as { name?: string; stages?: unknown };
@@ -68,16 +68,26 @@ export function createApp(deps: ServerDeps) {
         res.status(400).json({ error: "需要 name（string）与 stages（数组）" });
         return;
       }
-      const parsed = parseTemplate(name, stages);
-      const target = join(deps.cfg.repoRoot, "config", "pipelines", "custom.json");
-      writeFileSync(target, JSON.stringify(parsed, null, 2), "utf8");
-      deps.logger.info({ template: parsed.name, file: target }, "custom template saved via web UI");
+      const parsed = deps.registry.save(name, stages);
+      deps.logger.info({ template: parsed.name, dir: deps.cfg.templatesDir }, "template saved (dynamic registration)");
       res.json({
         ok: true,
         name: parsed.name,
-        path: "config/pipelines/custom.json",
-        note: "模板已保存。重启网关并设置 PIPELINE_TEMPLATE=config/pipelines/custom.json 生效（当前进程仍使用原模板）。",
+        path: `config/pipelines/${parsed.name}.json`,
+        note: `模板「${parsed.name}」已保存并立即可用（触发时 policy.template=${parsed.name}）。`,
       });
+    } catch (err) {
+      respondError(res, err);
+    }
+  });
+
+  // ── 删除流程模板（default 不可删）────────────────────────────────────────
+  app.delete("/api/templates/:name", (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as string;
+      deps.registry.remove(name);
+      deps.logger.info({ template: name }, "template deleted");
+      res.json({ ok: true, name });
     } catch (err) {
       respondError(res, err);
     }
@@ -177,17 +187,21 @@ export function createApp(deps: ServerDeps) {
     res.json({ id: p.id, events: p.events });
   });
 
-  // ── 流程模板 ───────────────────────────────────────────────────────────────
+  // ── 流程模板（平台多模板）────────────────────────────────────────────────
   app.get("/api/templates", (_req, res) => {
     res.json({
-      name: deps.template.name,
-      stages: deps.template.stages.map((s) => ({
-        id: s.id,
-        agent: s.agent,
-        onSuccess: s.onSuccess,
-        reworkTarget: s.reworkTarget,
-        ops: s.ops,
-        multi: s.multi,
+      default: deps.defaultTemplate,
+      templates: deps.registry.list().map((t) => ({
+        name: t.name,
+        builtin: t.name === "default",
+        stages: t.stages.map((s) => ({
+          id: s.id,
+          agent: s.agent,
+          onSuccess: s.onSuccess,
+          reworkTarget: s.reworkTarget,
+          ops: s.ops,
+          multi: s.multi,
+        })),
       })),
     });
   });

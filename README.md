@@ -28,7 +28,7 @@
 ```
 
 - **Agent 运行时**：DeepSeek Harness（DSH）`headless` profile —— 每个角色一次 `dsh --profile headless "<task>"` 调用，输出严格 JSON 驱动状态机。
-- **可定制编排**：流程模板（JSON）定义阶段序列与 agent 角色，可**增删 agent 节点**（示例：加评审节点、删测试节点），见 [docs/usage.md](docs/usage.md#4-定制研发流程流程模板)。
+- **模板平台**：多个流程模板并存、同时使用、互不干扰——触发时按需求选择模板（`policy.template` 或页面下拉），Web 保存新模板**立即生效**（动态注册），可增删 Agent 节点，见 [docs/usage.md](docs/usage.md#4-定制研发流程流程模板)。
 - **多开发 Agent 联调**：开发阶段支持 `multi` 配置，多服务并行开发，**契约轮 → 汇总广播 → 实现轮**模拟团队联调，见 [docs/usage.md](docs/usage.md#5-多开发-agent-并行联调分布式系统)。
 - **表单接入**：可插拔适配器。`mock`（模拟器）随时可用；`feishu`/`dingtalk` 适配器已实现验签与字段归一化；另有**标准接口触发** `POST /api/pipelines`。
 - **部署**：Kubernetes（kubectl 模式），无集群时自动降级为 simulated 模式（输出完整部署计划与证据）。
@@ -48,7 +48,7 @@
 │       ├── notify/          # 通知器：console / 飞书机器人 / 钉钉机器人
 │       ├── public/          # Web 控制台（触发/配置/进度与日志）
 │       └── http/ cli/       # webhook+API、命令行
-├── config/pipelines/        # 流程模板（default / with-code-review / multi-dev 示例）
+├── config/pipelines/        # 模板注册目录（*.json 全量注册，Web 动态保存/删除）
 ├── profiles/headless/       # DSH headless profile（agent 运行时，需安装到 ~/.dsh）
 ├── k8s/demo-app/            # 示例应用清单（base + test/prod overlay，kustomize）
 ├── scripts/                 # 安装、模拟提交、一键演示
@@ -161,7 +161,7 @@ http://127.0.0.1:3081/
 ```
 
 - **触发**：表单填写需求（标题/描述/提交人/优先级/fields/policy）→ 直接发起流水线；
-- **配置**：查看当前生效配置（模板/模式/策略/触发源），在线编辑流程模板并保存为 `config/pipelines/custom.json`（重启 + `PIPELINE_TEMPLATE` 生效）；
+- **配置**：查看当前生效配置（默认模板/模式/策略/触发源），**模板平台管理**——列表查看/在线编辑/新建/删除模板，保存后立即生效；
 - **进度与日志**：流水线列表（5s 自动刷新）、事件流时间线、执行历史（含打回轮次与耗时）、各阶段 Agent 输出、按流水线过滤的实时日志，以及验收通过/拒绝、失败重试操作按钮。
 
 ## 流水线 API

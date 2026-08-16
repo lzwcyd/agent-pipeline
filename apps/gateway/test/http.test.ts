@@ -11,7 +11,7 @@ import { CompositeNotifier } from "../src/notify/notifier.js";
 import { createLogger } from "../src/logger.js";
 import { createFormSources } from "../src/forms/index.js";
 import { createApp, type ServerDeps } from "../src/http/server.js";
-import { DEFAULT_TEMPLATE } from "../src/pipeline/template.js";
+import { DEFAULT_TEMPLATE, TemplateRegistry } from "../src/pipeline/template.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const MOCK_DSH = join(REPO_ROOT, "scripts", "mock-dsh.mjs");
@@ -40,8 +40,9 @@ async function makeHttpHarness(env: Record<string, string> = {}): Promise<HttpHa
   const notifier = new CompositeNotifier(cfg);
   const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
   const sources = createFormSources(cfg);
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, template: DEFAULT_TEMPLATE, logger });
-  const deps: ServerDeps = { cfg, store, orchestrator, sources, template: DEFAULT_TEMPLATE, logger };
+  const registry = new TemplateRegistry({ dir: cfg.templatesDir, initial: [DEFAULT_TEMPLATE] });
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, defaultTemplate: "default", logger });
+  const deps: ServerDeps = { cfg, store, orchestrator, sources, registry, defaultTemplate: "default", logger };
   const app = createApp(deps);
   const server: Server = await new Promise((r) => {
     const s = app.listen(0, "127.0.0.1", () => r(s));
@@ -110,21 +111,35 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
     expect(cfg.pipelineMode).toBeTruthy();
   });
 
-  it("POST /api/templates 保存自定义模板（写 config/pipelines/custom.json），非法模板 400", async () => {
-    const target = join(REPO_ROOT, "config", "pipelines", "custom.json");
-    const existed = existsSync(target);
+  it("POST /api/templates 动态注册新模板（立即生效），DELETE 删除，非法模板 400", async () => {
+    const name = `web-tpl-${Date.now()}`;
+    const target = join(REPO_ROOT, "config", "pipelines", `${name}.json`);
     try {
       const res = await fetch(`${h.baseUrl}/api/templates`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "web-test", stages: DEFAULT_TEMPLATE.stages }),
+        body: JSON.stringify({ name, stages: DEFAULT_TEMPLATE.stages }),
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { ok: boolean; path: string };
+      const body = (await res.json()) as { ok: boolean; name: string };
       expect(body.ok).toBe(true);
       expect(existsSync(target)).toBe(true);
+
+      // 注册后立即可用：触发指定该模板
+      const trigger = await fetch(`${h.baseUrl}/api/pipelines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "模板平台验证", template: name }),
+      });
+      expect(trigger.status).toBe(202);
+      const pid = ((await trigger.json()) as { pipelineId: string }).pipelineId;
+      const done = await waitPipeline(h.baseUrl, pid);
+      expect(done.status).toBe("done");
+      expect(done.templateName).toBe(name);
     } finally {
-      if (!existed) rmSync(target, { force: true });
+      // 清理：删除模板（会同步删文件）
+      await fetch(`${h.baseUrl}/api/templates/${name}`, { method: "DELETE" });
+      rmSync(target, { force: true });
     }
 
     // 非法 agent 角色 → 400
@@ -140,6 +155,10 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
       }),
     });
     expect(bad.status).toBe(400);
+
+    // 删除内置 default → 400
+    const delDefault = await fetch(`${h.baseUrl}/api/templates/default`, { method: "DELETE" });
+    expect(delDefault.status).toBe(400);
   });
 
   it("POST /api/pipelines 标准接口触发 → 202 → 全链路 done", async () => {
@@ -198,9 +217,10 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
 
     // templates
     const tplRes = await fetch(`${h.baseUrl}/api/templates`);
-    const tpl = (await tplRes.json()) as { name: string; stages: unknown[] };
-    expect(tpl.name).toBe("default");
-    expect(tpl.stages.length).toBeGreaterThanOrEqual(7);
+    const tpl = (await tplRes.json()) as { default: string; templates: Array<{ name: string; stages: unknown[] }> };
+    expect(tpl.default).toBe("default");
+    expect(tpl.templates.some((t) => t.name === "default")).toBe(true);
+    expect(tpl.templates.find((t) => t.name === "default")?.stages.length).toBeGreaterThanOrEqual(7);
 
     // logs：agent 调用日志可查
     const logRes = await fetch(`${h.baseUrl}/api/logs?lines=200&pipelineId=${body.pipelineId}`);

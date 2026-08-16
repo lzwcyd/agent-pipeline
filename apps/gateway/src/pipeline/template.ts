@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** 可用的 Agent 角色（内置 + 可扩展） */
 export type AgentRole = "evaluator" | "developer" | "tester" | "reviewer" | "ops" | "acceptance";
@@ -85,10 +86,96 @@ export function parseTemplate(name: string, stages: unknown): PipelineTemplate {
   return { name, stages: rawStages as TemplateStage[] };
 }
 
-/** 加载流程模板：缺省内置；PIPELINE_TEMPLATE 指向 JSON 文件时加载并校验 */
+/** 加载流程模板文件（缺省内置） */
 export function loadTemplate(filePath?: string): PipelineTemplate {
   if (!filePath) return DEFAULT_TEMPLATE;
   const raw = readFileSync(filePath, "utf8");
   const parsed = JSON.parse(raw) as Partial<PipelineTemplate>;
   return parseTemplate(parsed.name ?? "", parsed.stages);
+}
+
+/** 内置模板名 */
+export const BUILTIN_TEMPLATE_NAME = "default";
+
+/**
+ * 模板注册表（平台）：管理多个流程模板，可同时被不同流水线使用。
+ * - 启动时扫描 registryDir 下的 *.json 全量注册；
+ * - 内置 default 始终可用，不可删除；
+ * - save() 动态注册/更新（写文件 + 内存生效），remove() 删除（写盘同步）；
+ * - get(name) 按名取模板，流水线各自绑定互不干扰。
+ */
+export class TemplateRegistry {
+  private readonly templates = new Map<string, PipelineTemplate>();
+  private readonly dir?: string;
+
+  constructor(opts: { dir?: string; initial?: PipelineTemplate[] } = {}) {
+    this.dir = opts.dir;
+    this.templates.set(BUILTIN_TEMPLATE_NAME, DEFAULT_TEMPLATE);
+    for (const t of opts.initial ?? []) {
+      if (t.name !== BUILTIN_TEMPLATE_NAME) this.templates.set(t.name, t);
+    }
+    this.scanDir();
+  }
+
+  /** 扫描注册目录：config/pipelines/*.json */
+  private scanDir(): void {
+    if (!this.dir || !existsSync(this.dir)) return;
+    for (const file of readdirSync(this.dir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const parsed = loadTemplate(join(this.dir, file));
+        if (parsed.name && parsed.name !== BUILTIN_TEMPLATE_NAME) {
+          this.templates.set(parsed.name, parsed);
+        }
+      } catch {
+        // 忽略非法模板文件（启动不阻塞，错误由 save 校验提示）
+      }
+    }
+  }
+
+  /** 全部模板（按名称排序，default 优先） */
+  list(): PipelineTemplate[] {
+    return [...this.templates.entries()]
+      .sort(([a], [b]) => (a === BUILTIN_TEMPLATE_NAME ? -1 : b === BUILTIN_TEMPLATE_NAME ? 1 : a.localeCompare(b)))
+      .map(([, t]) => t);
+  }
+
+  names(): string[] {
+    return this.list().map((t) => t.name);
+  }
+
+  /** 按名取模板；不存在抛错 */
+  get(name: string): PipelineTemplate {
+    const t = this.templates.get(name);
+    if (!t) throw new Error(`流程模板不存在：${name}（可用：${this.names().join(", ")}）`);
+    return t;
+  }
+
+  has(name: string): boolean {
+    return this.templates.has(name);
+  }
+
+  /** 动态注册/更新模板（校验后写盘，立即生效）。内置 default 不可覆盖。 */
+  save(name: string, stages: unknown): PipelineTemplate {
+    if (name === BUILTIN_TEMPLATE_NAME) {
+      throw new Error(`不允许覆盖内置模板 ${BUILTIN_TEMPLATE_NAME}，请换一个模板名`);
+    }
+    const parsed = parseTemplate(name, stages);
+    if (this.dir) {
+      writeFileSync(join(this.dir, `${name}.json`), JSON.stringify(parsed, null, 2), "utf8");
+    }
+    this.templates.set(name, parsed);
+    return parsed;
+  }
+
+  /** 删除模板（default 不可删） */
+  remove(name: string): void {
+    if (name === BUILTIN_TEMPLATE_NAME) throw new Error(`不允许删除内置模板 ${BUILTIN_TEMPLATE_NAME}`);
+    if (!this.templates.has(name)) throw new Error(`流程模板不存在：${name}`);
+    this.templates.delete(name);
+    if (this.dir) {
+      const file = join(this.dir, `${name}.json`);
+      if (existsSync(file)) rmSync(file, { force: true });
+    }
+  }
 }

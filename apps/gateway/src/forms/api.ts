@@ -23,6 +23,8 @@ export interface ApiTriggerInput {
   submitter?: string;
   submitterId?: string;
   priority?: string;
+  /** 使用的流程模板名（简写，等价于 policy.template） */
+  template?: string;
   fields?: Record<string, unknown>;
   policy?: Record<string, unknown>;
   sourceFormId?: string;
@@ -41,7 +43,10 @@ export class ApiTriggerSource implements FormSource {
     const title = input.title?.trim();
     if (!title) throw new FormParseError("API 触发负载缺少 title");
     const fields = input.fields ?? {};
-    const policy = extractPolicy({ ...fields, ...(input.policy ? { _policy: input.policy } : {}) });
+    let policy = extractPolicy({ ...fields, ...(input.policy ? { _policy: input.policy } : {}) });
+    if (input.template) {
+      policy = { ...policy, template: input.template };
+    }
     const priority = typeof input.priority === "string" ? input.priority : undefined;
     return {
       source: "api",

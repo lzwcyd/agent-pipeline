@@ -1,11 +1,12 @@
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { config as dotenvConfig } from "dotenv";
 import { loadConfig, resolveRepoRoot } from "./config.js";
 import { DshRunner } from "./agents/dsh-runner.js";
 import { createFormSources } from "./forms/index.js";
 import { PipelineStore } from "./pipeline/store.js";
 import { Orchestrator } from "./pipeline/orchestrator.js";
-import { loadTemplate } from "./pipeline/template.js";
+import { TemplateRegistry, loadTemplate } from "./pipeline/template.js";
 import { CompositeNotifier } from "./notify/notifier.js";
 import { createLogger } from "./logger.js";
 import { buildCli } from "./cli/index.js";
@@ -15,16 +16,38 @@ async function main() {
   dotenvConfig({ path: join(resolveRepoRoot(), ".env") });
   const cfg = loadConfig();
   const logger = createLogger({ level: cfg.LOG_LEVEL, logsDir: cfg.logsDir });
-  const template = loadTemplate(cfg.pipelineTemplateFile);
-  logger.info({ template: template.name, templateFile: cfg.pipelineTemplateFile ?? "builtin-default" }, "pipeline template loaded");
+
+  // 模板注册表：扫描 config/pipelines/*.json 全量注册
+  const registry = new TemplateRegistry({ dir: cfg.templatesDir });
+  // 兼容旧配置：PIPELINE_TEMPLATE 为文件路径时注册为额外模板并设为默认；否则视为模板名
+  let defaultTemplate = "default";
+  if (cfg.PIPELINE_TEMPLATE) {
+    if (existsSync(cfg.defaultTemplate)) {
+      const t = loadTemplate(cfg.defaultTemplate);
+      try {
+        registry.save(t.name, t.stages);
+        defaultTemplate = t.name;
+        logger.info({ template: t.name, file: cfg.defaultTemplate }, "registered template from PIPELINE_TEMPLATE path");
+      } catch (err) {
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, "PIPELINE_TEMPLATE 注册失败，使用默认模板");
+      }
+    } else {
+      defaultTemplate = cfg.PIPELINE_TEMPLATE;
+      if (!registry.has(defaultTemplate)) {
+        logger.warn({ template: defaultTemplate }, "默认模板不存在，回退到 default");
+        defaultTemplate = "default";
+      }
+    }
+  }
+  logger.info({ templates: registry.names(), defaultTemplate }, "pipeline templates loaded");
 
   const notifier = new CompositeNotifier(cfg);
   const store = new PipelineStore(cfg.pipelinesDir);
   const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
   const sources = createFormSources(cfg);
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, template, logger });
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, defaultTemplate, logger });
 
-  const program = buildCli({ cfg, store, orchestrator, runner, sources, notifier, logger, template });
+  const program = buildCli({ cfg, store, orchestrator, runner, sources, notifier, logger, registry, defaultTemplate });
   program.parseAsync(process.argv).catch((err) => {
     logger.error({ err: err instanceof Error ? err.message : String(err) }, "cli error");
     process.exitCode = 1;

@@ -46,6 +46,11 @@
             </div>
           </div>
 
+          <label>流程模板（平台多模板，各自独立）</label>
+          <select name="template" id="template-select">
+            <option value="">（默认模板）</option>
+          </select>
+
           <label>触发级策略 policy（JSON，可选）</label>
           <textarea name="policy" rows="3" placeholder='{"acceptanceFailure": "rollback", "maxRework": 3}'></textarea>
 
@@ -65,15 +70,23 @@
         <table id="config-table" class="kv"></table>
       </div>
       <div class="card">
-        <h2>流程模板（可定制编排：增删 Agent 节点）</h2>
+        <h2>流程模板（平台多模板 · 可增删 Agent 节点）</h2>
         <p class="hint">
-          修改下方 JSON 后保存为 <code>config/pipelines/custom.json</code>；
-          重启网关并设置 <code>PIPELINE_TEMPLATE=config/pipelines/custom.json</code> 生效。
+          平台支持多个模板并存、同时使用、互不干扰。选择一个模板查看/编辑；
+          保存后<strong>立即生效</strong>（触发时在「触发」页选择即可）。内置 <code>default</code> 不可删除。
           阶段字段：<code>id / agent / onSuccess / reworkTarget? / ops? / multi?</code>
         </p>
-        <textarea id="template-editor" rows="20" spellcheck="false"></textarea>
         <div class="row">
-          <button id="template-save" class="primary">💾 保存自定义模板</button>
+          <select id="template-list"></select>
+          <button id="template-new" class="ghost">＋ 新建模板</button>
+          <button id="template-delete" class="ghost danger">🗑 删除</button>
+        </div>
+        <label>模板名</label>
+        <input id="template-name" placeholder="template-name（英文/数字/连字符）" />
+        <label>模板 JSON（stages 数组）</label>
+        <textarea id="template-editor" rows="18" spellcheck="false"></textarea>
+        <div class="row">
+          <button id="template-save" class="primary">💾 保存模板（立即生效）</button>
           <span id="template-msg" class="result inline"></span>
         </div>
       </div>

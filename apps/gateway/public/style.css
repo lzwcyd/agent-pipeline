@@ -90,3 +90,8 @@ pre.json { background: var(--panel2); border: 1px solid var(--border); border-ra
 .logbox .lvl-error { color: var(--err); }
 .logbox .lvl-warn { color: var(--warn); }
 .actions button { margin-right: 8px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+button.danger { color: var(--err); border-color: var(--err); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+#template-name { max-width: 320px; }
+#template-list { max-width: 320px; }

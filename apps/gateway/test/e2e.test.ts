@@ -7,7 +7,7 @@ import { DshRunner } from "../src/agents/dsh-runner.js";
 import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
 import { CompositeNotifier } from "../src/notify/notifier.js";
-import { DEFAULT_TEMPLATE, loadTemplate } from "../src/pipeline/template.js";
+import { DEFAULT_TEMPLATE, TemplateRegistry, loadTemplate } from "../src/pipeline/template.js";
 import type { EnvConfig } from "../src/config.js";
 import type { PipelineTemplate } from "../src/pipeline/template.js";
 
@@ -21,7 +21,7 @@ interface Harness {
   cleanup: () => void;
 }
 
-function makeHarness(env: Record<string, string> = {}, template: PipelineTemplate = DEFAULT_TEMPLATE): Harness {
+function makeHarness(env: Record<string, string> = {}, template: PipelineTemplate | TemplateRegistry = DEFAULT_TEMPLATE): Harness {
   const dir = mkdtempSync(join(tmpdir(), "pipeline-e2e-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
@@ -37,7 +37,12 @@ function makeHarness(env: Record<string, string> = {}, template: PipelineTemplat
   const store = new PipelineStore(cfg.pipelinesDir);
   const notifier = new CompositeNotifier(cfg);
   const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS });
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, template });
+  const registry = template instanceof TemplateRegistry ? template : new TemplateRegistry({ initial: [template] });
+  const defaultTemplate =
+    template instanceof TemplateRegistry
+      ? (template.has("default") ? "default" : template.list()[0]!.name)
+      : template.name;
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, defaultTemplate });
   return {
     cfg,
     store,
@@ -306,11 +311,13 @@ describe("流程模板定制（可增删 agent 节点）", () => {
 
   it("删除测试节点（精简模板：dev 后直接部署）", async () => {
     const slim = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    slim.name = "slim"; // 不能与内置 default 同名（registry 会忽略）
     slim.stages = slim.stages.filter((s) => s.id !== "testing");
     slim.stages.find((s) => s.id === "dev_in_progress")!.onSuccess = "test_deploying";
     h = makeHarness({}, slim);
     const p = await h.orchestrator.handleSubmission(sampleSubmission);
     expect(p.status).toBe("done");
+    expect(p.templateName).toBe("slim");
     expect(p.executions.some((e) => e.stage === "testing")).toBe(false);
     expect(p.deploy?.prod?.namespace).toBe("demo-prod");
   });
@@ -371,3 +378,79 @@ describe("多开发 Agent 并行联调（multi-dev 模板）", () => {
     expect(Object.keys(p.agents.dev_in_progress?.output?.contracts ?? {}).length).toBe(2);
   });
 });
+
+describe("模板平台：多模板并存、动态注册、互不干扰", () => {
+  let h: Harness;
+  afterEach(() => h?.cleanup());
+
+  it("同一进程内两条流水线用不同模板，互不干扰", async () => {
+    const slim = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    slim.name = "no-testing";
+    slim.stages = slim.stages.filter((s) => s.id !== "testing");
+    slim.stages.find((s) => s.id === "dev_in_progress")!.onSuccess = "test_deploying";
+    const registry = new TemplateRegistry({ initial: [slim] }); // 内置 default + no-testing
+    h = makeHarness({}, registry);
+
+    // 流水线 A：默认模板（含 testing 阶段）
+    const a = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(a.status).toBe("done");
+    expect(a.templateName).toBe("default");
+    expect(a.executions.some((e) => e.stage === "testing")).toBe(true);
+
+    // 流水线 B：显式指定 no-testing 模板（无 testing 阶段）
+    const b = await h.orchestrator.handleSubmission({
+      ...sampleSubmission,
+      submissionId: "sub-B",
+      policy: { template: "no-testing" },
+    });
+    expect(b.status).toBe("done");
+    expect(b.templateName).toBe("no-testing");
+    expect(b.executions.some((e) => e.stage === "testing")).toBe(false);
+    expect(b.executions.some((e) => e.stage === "test_deploying")).toBe(true);
+
+    // 两条流水线互不影响
+    expect(a.id).not.toBe(b.id);
+    expect(a.templateName).toBe("default");
+    expect(b.templateName).toBe("no-testing");
+  });
+
+  it("动态注册模板后立即可用（无需重启）", async () => {
+    h = makeHarness({});
+    // 运行中注册新模板
+    const slim = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    slim.name = "quick";
+    slim.stages = slim.stages.filter((s) => s.id !== "testing");
+    slim.stages.find((s) => s.id === "dev_in_progress")!.onSuccess = "test_deploying";
+    h.orchestrator.registerTemplate("quick", slim.stages);
+
+    const p = await h.orchestrator.handleSubmission({
+      ...sampleSubmission,
+      policy: { template: "quick" },
+    });
+    expect(p.status).toBe("done");
+    expect(p.templateName).toBe("quick");
+    expect(p.executions.some((e) => e.stage === "testing")).toBe(false);
+  });
+
+  it("指定不存在的模板 → 触发报错", async () => {
+    h = makeHarness({});
+    expect(() =>
+      h.orchestrator.startSubmission({ ...sampleSubmission, policy: { template: "not-exist" } }),
+    ).toThrow(/模板不存在/);
+  });
+
+  it("删除模板后不可再用", async () => {
+    h = makeHarness({});
+    const slim = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    slim.name = "temp-del";
+    h.orchestrator.registerTemplate("temp-del", slim.stages);
+    expect(h.orchestrator.hasTemplate("temp-del")).toBe(true);
+
+    h.orchestrator.removeTemplate("temp-del");
+    expect(h.orchestrator.hasTemplate("temp-del")).toBe(false);
+    expect(h.orchestrator.listTemplates()).not.toContain("temp-del");
+    // 内置 default 不可删
+    expect(() => h.orchestrator.removeTemplate("default")).toThrow(/不允许删除/);
+  });
+});
+

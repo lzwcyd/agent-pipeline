@@ -28,8 +28,10 @@ const envSchema = z.object({
   ACCEPTANCE_FAILURE_POLICY: z.enum(["rollback", "rework", "reject"]).default("rollback"),
   /** 测试/验收未通过打回开发的最大次数，超限终止 */
   MAX_REWORK: z.coerce.number().default(3),
-  /** 流程模板文件路径（JSON）。缺省使用内置默认模板 */
+  /** 默认模板名（缺省 default）。也可指向 JSON 文件路径（兼容旧配置，注册为同名模板并设为默认） */
   PIPELINE_TEMPLATE: z.string().optional(),
+  /** 模板注册目录（扫描 *.json 全量注册，Web 保存也写入这里） */
+  PIPELINE_TEMPLATES_DIR: z.string().default("config/pipelines"),
   /** 日志级别：trace|debug|info|warn|error */
   LOG_LEVEL: z.string().default("info"),
   NOTIFY_CHANNELS: z.string().default("console"),
@@ -66,7 +68,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     artifactsRoot: join(dataDir, "artifacts"),
     logsDir: join(dataDir, "logs"),
     k8sManifestsDir: join(repoRoot, "k8s", "demo-app"),
-    // 流程模板路径相对仓库根解析
-    pipelineTemplateFile: parsed.data.PIPELINE_TEMPLATE ? resolve(repoRoot, parsed.data.PIPELINE_TEMPLATE) : undefined,
+    // 模板注册目录相对仓库根解析
+    templatesDir: resolve(repoRoot, parsed.data.PIPELINE_TEMPLATES_DIR),
+    // 兼容旧配置：PIPELINE_TEMPLATE 为文件路径时注册为额外模板；否则视为默认模板名
+    defaultTemplate: parsed.data.PIPELINE_TEMPLATE ? resolve(repoRoot, parsed.data.PIPELINE_TEMPLATE) : "default",
   };
 }

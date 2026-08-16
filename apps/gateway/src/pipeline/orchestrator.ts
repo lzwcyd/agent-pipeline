@@ -8,7 +8,7 @@ import type { Notifier } from "../notify/notifier.js";
 import { SOURCE_LABEL } from "../forms/index.js";
 import { PipelineStore } from "./store.js";
 import { ev, isTerminal, transition } from "./state-machine.js";
-import { BUILTIN_STAGES, type AgentRole, type PipelineTemplate, type TemplateStage } from "./template.js";
+import { BUILTIN_STAGES, type AgentRole, type PipelineTemplate, type TemplateStage, type TemplateRegistry } from "./template.js";
 import type { AppLogger } from "../logger.js";
 import type {
   AgentResult,
@@ -36,8 +36,10 @@ export interface OrchestratorDeps {
   store: PipelineStore;
   runner: DshRunner;
   notifier: Notifier;
-  /** 流程模板（可定制编排） */
-  template: PipelineTemplate;
+  /** 模板注册表（平台多模板，流水线各自绑定互不干扰） */
+  registry: TemplateRegistry;
+  /** 默认模板名（触发未指定时使用） */
+  defaultTemplate: string;
   logger?: AppLogger;
 }
 
@@ -55,19 +57,53 @@ export class Orchestrator {
     return this.deps.logger;
   }
 
-  /** 流程模板中的阶段定义 */
-  private stageDef(stage: string): TemplateStage | undefined {
-    return this.deps.template.stages.find((s) => s.id === stage);
+  /** 流水线绑定的流程模板（按 p.templateName 从注册表取） */
+  private templateOf(p: Pipeline): PipelineTemplate {
+    return this.deps.registry.get(p.templateName);
+  }
+
+  /** 解析触发使用的模板名：触发级 policy.template > 默认模板 */
+  private resolveTemplateName(sub: FormSubmission): string {
+    const name = sub.policy?.template ?? this.deps.defaultTemplate;
+    if (!this.deps.registry.has(name)) {
+      throw new Error(`流程模板不存在：${name}（可用：${this.deps.registry.names().join(", ")}）`);
+    }
+    return name;
+  }
+
+  // ── 模板平台管理（供 Web 控制台/CLI 调用） ─────────────────────────────────
+
+  /** 动态注册/更新模板（立即生效） */
+  registerTemplate(name: string, stages: unknown): PipelineTemplate {
+    return this.deps.registry.save(name, stages);
+  }
+
+  /** 删除模板（default 不可删） */
+  removeTemplate(name: string): void {
+    this.deps.registry.remove(name);
+  }
+
+  hasTemplate(name: string): boolean {
+    return this.deps.registry.has(name);
+  }
+
+  listTemplates(): string[] {
+    return this.deps.registry.names();
+  }
+
+  /** 流水线模板中的阶段定义 */
+  private stageDefOf(p: Pipeline, stage: string): TemplateStage | undefined {
+    return this.templateOf(p).stages.find((s) => s.id === stage);
   }
 
   /** 模板允许的所有状态（阶段 + 终态），作为迁移合法性来源 */
-  private allowedStages(): string[] {
-    return [...this.deps.template.stages.map((s) => s.id), "submitted", "rejected", "failed", "done"];
+  private allowedStagesOf(p: Pipeline): string[] {
+    return [...this.templateOf(p).stages.map((s) => s.id), "submitted", "rejected", "failed", "done"];
   }
 
   /** 打回目标：模板 reworkTarget 缺省回到开发阶段 */
-  private reworkTargetOf(stage: string): string {
-    return this.stageDef(stage)?.reworkTarget ?? "dev_in_progress";
+  private reworkTargetOf(p: Pipeline, stage: string): string {
+    return this.stageDefOf(p, stage)?.reworkTarget ?? "dev_in_progress";
   }
 
   /** 触发生效的流水线策略：触发级覆盖 > 环境变量默认值 */
@@ -101,8 +137,9 @@ export class Orchestrator {
 
   /** 表单提交入口：建流水线 → 异步驱动评估与后续阶段，立即返回 */
   startSubmission(sub: FormSubmission): Pipeline {
-    const pipeline = this.deps.store.create(sub, this.deps.template.name);
-    this.log?.info({ pipelineId: pipeline.id, trigger: sub.meta.triggerType, source: sub.source, title: sub.title, template: this.deps.template.name }, "pipeline created");
+    const templateName = this.resolveTemplateName(sub);
+    const pipeline = this.deps.store.create(sub, templateName);
+    this.log?.info({ pipelineId: pipeline.id, trigger: sub.meta.triggerType, source: sub.source, title: sub.title, template: templateName }, "pipeline created");
     void this.drive(pipeline);
     return pipeline;
   }
@@ -134,7 +171,7 @@ export class Orchestrator {
         "📥 收到新的需求提交",
         `来源：${SOURCE_LABEL[sub.source]}（表单 ${sub.sourceFormId}）\n标题：${sub.title}\n提交人：${sub.submitter}\n描述：${sub.description.slice(0, 200)}`,
       );
-      const startStage = this.stageDef("evaluating") ? "evaluating" : this.deps.template.stages[0]!.id;
+      const startStage = this.stageDefOf(pipeline, "evaluating") ? "evaluating" : this.templateOf(pipeline).stages[0]!.id;
       await this.runStage(pipeline, startStage);
     } catch (err) {
       // 编排器自身异常（非阶段失败）：兜底标记 failed
@@ -174,8 +211,8 @@ export class Orchestrator {
       return this.handleAcceptanceFailure(p, "awaiting_acceptance", reason);
     }
     await this.notify(p, "✅ 产品人工验收通过", `${by} 已确认验收通过，开始生产部署。`);
-    const next = this.stageDef("awaiting_acceptance")!.onSuccess;
-    p = transition(p, next, ev("stage_succeeded", { stage: "awaiting_acceptance" }), this.allowedStages());
+    const next = this.stageDefOf(p, "awaiting_acceptance")!.onSuccess;
+    p = transition(p, next, ev("stage_succeeded", { stage: "awaiting_acceptance" }), this.allowedStagesOf(p));
     this.deps.store.save(p);
     return this.runStage(p, next);
   }
@@ -202,13 +239,13 @@ export class Orchestrator {
   // ── 阶段执行 ────────────────────────────────────────────────────────────────
 
   private async runStage(p: Pipeline, stage: string): Promise<Pipeline> {
-    const def = this.stageDef(stage);
+    const def = this.stageDefOf(p, stage);
     if (!def) throw new Error(`流程模板未定义阶段：${stage}`);
     let current: Pipeline;
     if (p.status === stage) {
       current = p;
     } else {
-      current = transition(p, stage, ev("stage_started", { stage }), this.allowedStages());
+      current = transition(p, stage, ev("stage_started", { stage }), this.allowedStagesOf(p));
       this.deps.store.save(current);
     }
     this.log?.info({ pipelineId: current.id, stage, agent: def.agent, round: this.stageRound(current, stage) }, "stage started");
@@ -286,7 +323,7 @@ export class Orchestrator {
           return this.afterProdDeploy(p, result);
       }
     }
-    return this.afterGenericStage(p, this.stageDef(stage)!, result);
+    return this.afterGenericStage(p, this.stageDefOf(p, stage)!, result);
   }
 
   /** 通用自定义阶段：按角色判定 pass/fail/reject，按模板推进或打回 */
@@ -295,7 +332,7 @@ export class Orchestrator {
     this.log?.info({ pipelineId: p.id, stage: def.id, agent: def.agent, verdict }, "generic stage verdict");
     if (verdict === "reject") {
       const reason = String((result.output?.reasons ?? result.output?.issues ?? ["未通过"]) as string[] | string).slice(0, 300);
-      let next = transition(p, "rejected", ev("rejected", { reason }), this.allowedStages());
+      let next = transition(p, "rejected", ev("rejected", { reason }), this.allowedStagesOf(p));
       this.deps.store.save(next);
       await this.notify(next, "❌ 阶段未通过（拒绝）", `阶段 ${def.id}：${reason}`, "warning");
       return next;
@@ -310,13 +347,13 @@ export class Orchestrator {
 
   /** 按模板推进到下一阶段 */
   private async advance(p: Pipeline, fromStage: string): Promise<Pipeline> {
-    const def = this.stageDef(fromStage)!;
+    const def = this.stageDefOf(p, fromStage)!;
     const next = def.onSuccess;
     const nextPipeline = transition(
       p,
       next,
       next === "done" ? ev("done") : ev("stage_succeeded", { stage: fromStage }),
-      this.allowedStages(),
+      this.allowedStagesOf(p),
     );
     this.deps.store.save(nextPipeline);
     if (next === "done" || next === "rejected" || next === "failed") {
@@ -423,22 +460,22 @@ export class Orchestrator {
       suggestedPriority: typeof out.suggestedPriority === "string" ? out.suggestedPriority : undefined,
     };
     if (!approved) {
-      let next: Pipeline = transition(p, "rejected", ev("rejected", { reason: evaluation.reasons.join("；") || "评估未通过" }), this.allowedStages());
+      let next: Pipeline = transition(p, "rejected", ev("rejected", { reason: evaluation.reasons.join("；") || "评估未通过" }), this.allowedStagesOf(p));
       next = { ...next, evaluation };
       this.deps.store.save(next);
       await this.notify(next, "❌ 需求评估未通过", `评分 ${evaluation.score ?? "-"}。理由：${evaluation.reasons.join("；")}`, "warning");
       return next;
     }
     let next: Pipeline = { ...p, evaluation };
-    next = transition(next, this.stageDef("evaluating")!.onSuccess, ev("stage_succeeded", { stage: "evaluating" }), this.allowedStages());
+    next = transition(next, this.stageDefOf(p, "evaluating")!.onSuccess, ev("stage_succeeded", { stage: "evaluating" }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     await this.notify(next, "✅ 需求评估通过", `评分 ${evaluation.score ?? "-"}（建议优先级 ${evaluation.suggestedPriority ?? "-"}）。进入开发。`);
-    return this.runStage(next, this.stageDef("evaluating")!.onSuccess);
+    return this.runStage(next, this.stageDefOf(p, "evaluating")!.onSuccess);
   }
 
   private async afterDevelopment(p: Pipeline): Promise<Pipeline> {
-    const nextStage = this.stageDef("dev_in_progress")!.onSuccess;
-    const next = transition(p, nextStage, ev("stage_succeeded", { stage: "dev_in_progress" }), this.allowedStages());
+    const nextStage = this.stageDefOf(p, "dev_in_progress")!.onSuccess;
+    const next = transition(p, nextStage, ev("stage_succeeded", { stage: "dev_in_progress" }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     const dev = next.agents.dev_in_progress?.output ?? {};
     const isMulti = dev.multi === true;
@@ -463,8 +500,8 @@ export class Orchestrator {
       await this.notify(p, "❌ 测试未通过", `问题清单：${reason}\n打回开发重新修复。`, "warning");
       return this.reworkToDev(p, "testing", reason);
     }
-    const nextStage = this.stageDef("testing")!.onSuccess;
-    const next = transition(p, nextStage, ev("stage_succeeded", { stage: "testing" }), this.allowedStages());
+    const nextStage = this.stageDefOf(p, "testing")!.onSuccess;
+    const next = transition(p, nextStage, ev("stage_succeeded", { stage: "testing" }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     await this.notify(next, "✅ 测试通过", `${summary || "全部用例通过"}，进入测试环境部署。`);
     return this.runStage(next, nextStage);
@@ -493,8 +530,8 @@ export class Orchestrator {
       return next;
     }
     await this.notify(next, "✅ 产品验收通过（自动）", "验收检查通过，开始生产部署。");
-    const nextStage = this.stageDef("awaiting_acceptance")!.onSuccess;
-    next = transition(next, nextStage, ev("stage_succeeded", { stage: "awaiting_acceptance" }), this.allowedStages());
+    const nextStage = this.stageDefOf(p, "awaiting_acceptance")!.onSuccess;
+    next = transition(next, nextStage, ev("stage_succeeded", { stage: "awaiting_acceptance" }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     return this.runStage(next, nextStage);
   }
@@ -512,11 +549,11 @@ export class Orchestrator {
     if (result.output?.deployed !== true) {
       return this.fail(p, "test_deploying", "运维 Agent 报告部署未成功：" + summarizeDeployFailure(result));
     }
-    const env = this.stageDef("test_deploying")?.ops?.env ?? "test";
+    const env = this.stageDefOf(p, "test_deploying")?.ops?.env ?? "test";
     const info = toDeployInfo(result, namespaceForEnv(env));
     let next: Pipeline = { ...p, deploy: { ...p.deploy, test: info } };
-    const nextStage = this.stageDef("test_deploying")!.onSuccess;
-    next = transition(next, nextStage, ev("stage_succeeded", { stage: "test_deploying" }), this.allowedStages());
+    const nextStage = this.stageDefOf(p, "test_deploying")!.onSuccess;
+    next = transition(next, nextStage, ev("stage_succeeded", { stage: "test_deploying" }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     await this.notify(
       next,
@@ -531,14 +568,14 @@ export class Orchestrator {
     if (result.output?.deployed !== true) {
       return this.fail(p, "prod_deploying", "运维 Agent 报告生产部署未成功：" + summarizeDeployFailure(result));
     }
-    const env = this.stageDef("prod_deploying")?.ops?.env ?? "prod";
+    const env = this.stageDefOf(p, "prod_deploying")?.ops?.env ?? "prod";
     const info = toDeployInfo(result, namespaceForEnv(env));
-    const nextStage = this.stageDef("prod_deploying")!.onSuccess;
+    const nextStage = this.stageDefOf(p, "prod_deploying")!.onSuccess;
     let next: Pipeline = transition(
       p,
       nextStage,
       nextStage === "done" ? ev("done") : ev("stage_succeeded", { stage: "prod_deploying" }),
-      this.allowedStages(),
+      this.allowedStagesOf(p),
     );
     next = { ...next, deploy: { ...next.deploy, prod: info } };
     this.deps.store.save(next);
@@ -560,19 +597,19 @@ export class Orchestrator {
     }
     if (policy === "reject") {
       const message = `验收未通过：${reason}`;
-      let next = transition(p, "failed", ev("stage_failed", { stage: sourceStage, message }), this.allowedStages());
+      let next = transition(p, "failed", ev("stage_failed", { stage: sourceStage, message }), this.allowedStagesOf(p));
       next = { ...next, failure: { stage: sourceStage, message } };
       this.deps.store.save(next);
       await this.notify(next, "⛔ 验收未通过，流水线终止（policy=reject）", message, "error");
       return next;
     }
     // rollback：模板需定义 test_rollback 阶段，否则降级为直接打回
-    if (!this.stageDef("test_rollback")) {
+    if (!this.stageDefOf(p, "test_rollback")) {
       this.log?.warn({ pipelineId: p.id }, "policy=rollback 但模板未定义 test_rollback 阶段，降级为 rework");
       await this.notify(p, "🔁 模板未定义回滚阶段，直接打回开发", `原因：${reason}`, "warning");
       return this.reworkToDev(p, sourceStage, reason);
     }
-    let next = transition(p, "test_rollback", ev("stage_failed", { stage: sourceStage, message: reason }), this.allowedStages());
+    let next = transition(p, "test_rollback", ev("stage_failed", { stage: sourceStage, message: reason }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     await this.notify(next, "↩️ 验收未通过，开始回滚测试环境", `原因：${reason}\n回滚完成后将打回开发重新修复。`, "warning");
     return this.runStage(next, "test_rollback");
@@ -584,15 +621,15 @@ export class Orchestrator {
     const count = (p.reworkCount ?? 0) + 1;
     if (count > maxRework) {
       const message = `打回开发次数超过上限（${maxRework} 次）：${reason}`;
-      let next = transition(p, "failed", ev("stage_failed", { stage: fromStage, message }), this.allowedStages());
+      let next = transition(p, "failed", ev("stage_failed", { stage: fromStage, message }), this.allowedStagesOf(p));
       next = { ...next, failure: { stage: fromStage, message }, reworkCount: count };
       this.deps.store.save(next);
       await this.notify(next, "🚫 打回次数超限，流水线终止", message, "error");
       return next;
     }
-    const target = this.reworkTargetOf(fromStage);
+    const target = this.reworkTargetOf(p, fromStage);
     let next: Pipeline = { ...p, reworkCount: count };
-    next = transition(next, target, ev("rework", { from: fromStage, reason }), this.allowedStages());
+    next = transition(next, target, ev("rework", { from: fromStage, reason }), this.allowedStagesOf(p));
     this.deps.store.save(next);
     await this.notify(next, `🔁 打回开发（第 ${count} 轮）`, `来源：${fromStage}\n原因：${reason}`);
     return this.runStage(next, target);
@@ -602,7 +639,7 @@ export class Orchestrator {
     const startedAt = new Date().toISOString();
     const finishedAt = new Date().toISOString();
     this.log?.error({ pipelineId: p.id, stage, message }, "stage failed");
-    let next = transition(p, "failed", ev("stage_failed", { stage, message }), this.allowedStages());
+    let next = transition(p, "failed", ev("stage_failed", { stage, message }), this.allowedStagesOf(p));
     next = {
       ...next,
       failure: { stage, message },
