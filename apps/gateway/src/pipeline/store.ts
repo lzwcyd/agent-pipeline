@@ -12,12 +12,13 @@ export class PipelineStore {
     mkdirSync(dir, { recursive: true });
   }
 
-  create(submission: Pipeline["submission"], templateName = "default"): Pipeline {
+  create(submission: Pipeline["submission"], templateName = "default", templateSnapshot?: unknown): Pipeline {
     const now = new Date().toISOString();
     const pipeline: Pipeline = {
       id: randomUUID(),
       status: "submitted",
       templateName,
+      templateSnapshot,
       submission,
       createdAt: now,
       updatedAt: now,

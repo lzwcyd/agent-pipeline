@@ -220,7 +220,14 @@ switch (role) {
   }
 
   default:
-    output = { error: `unknown role: ${role}` };
+    // 自定义 Agent：输出覆盖各判定规则的字段（approved/status/deployed/accepted）
+    output = {
+      status: "ok",
+      approved: true,
+      accepted: true,
+      deployed: true,
+      summary: `自定义 Agent ${role} 执行完成（mock）`,
+    };
 }
 
 console.log(JSON.stringify(output));

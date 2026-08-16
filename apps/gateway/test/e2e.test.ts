@@ -8,6 +8,7 @@ import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
 import { CompositeNotifier } from "../src/notify/notifier.js";
 import { DEFAULT_TEMPLATE, TemplateRegistry, loadTemplate } from "../src/pipeline/template.js";
+import { AgentRegistry } from "../src/agents/registry.js";
 import type { EnvConfig } from "../src/config.js";
 import type { PipelineTemplate } from "../src/pipeline/template.js";
 
@@ -21,8 +22,8 @@ interface Harness {
   cleanup: () => void;
 }
 
-function makeHarness(env: Record<string, string> = {}, template: PipelineTemplate | TemplateRegistry = DEFAULT_TEMPLATE): Harness {
-  const dir = mkdtempSync(join(tmpdir(), "pipeline-e2e-"));
+function makeHarness(env: Record<string, string> = {}, template: PipelineTemplate | TemplateRegistry = DEFAULT_TEMPLATE, dataDir?: string): Harness {
+  const dir = dataDir ?? mkdtempSync(join(tmpdir(), "pipeline-e2e-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
     DSH_CLI: MOCK_DSH,
@@ -42,14 +43,14 @@ function makeHarness(env: Record<string, string> = {}, template: PipelineTemplat
     template instanceof TemplateRegistry
       ? (template.has("default") ? "default" : template.list()[0]!.name)
       : template.name;
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, defaultTemplate });
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, agentRegistry: new AgentRegistry(), defaultTemplate });
   return {
     cfg,
     store,
     orchestrator,
     cleanup: () => {
       process.env = prev;
-      rmSync(dir, { recursive: true, force: true });
+      if (!dataDir) rmSync(dir, { recursive: true, force: true });
     },
   };
 }
@@ -454,3 +455,126 @@ describe("模板平台：多模板并存、动态注册、互不干扰", () => {
   });
 });
 
+
+describe("平台韧性：崩溃恢复、模板快照、自定义 Agent", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = makeHarness();
+  });
+  afterEach(() => h?.cleanup());
+
+  it("崩溃恢复：中断的流水线由新实例自动续跑至 done", async () => {
+    // 同一数据目录模拟"重启"（makeHarness 复用 dir）
+    const dir = mkdtempSync(join(tmpdir(), "pipeline-recover-"));
+    const first = makeHarness({}, DEFAULT_TEMPLATE, dir);
+    const p0 = first.store.create(sampleSubmission);
+    first.cleanup();
+    const fresh = makeHarness({}, DEFAULT_TEMPLATE, dir);
+    expect(fresh.store.get(p0.id)?.status).toBe("submitted");
+    const resumed = await fresh.orchestrator.resumePending();
+    expect(resumed).toBe(1);
+    const done = await fresh.orchestrator.awaitPipeline(p0.id, 60000);
+    expect(done.status).toBe("done");
+    expect(done.events.some((e) => e.type === "recovered")).toBe(true);
+    fresh.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("崩溃恢复：停在中间阶段的流水线从断点续跑", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pipeline-recover-"));
+    const first = makeHarness({}, DEFAULT_TEMPLATE, dir);
+    const p0 = first.store.create(sampleSubmission);
+    first.cleanup();
+    const fresh = makeHarness({}, DEFAULT_TEMPLATE, dir);
+    // 直接改状态模拟"中断在 testing"
+    let mid = fresh.store.get(p0.id)!;
+    mid = { ...mid, status: "testing", events: [...mid.events, { type: "stage_started", stage: "testing", at: new Date().toISOString() }] };
+    fresh.store.save(mid);
+    const resumed = await fresh.orchestrator.resumePending();
+    expect(resumed).toBe(1);
+    const done = await fresh.orchestrator.awaitPipeline(p0.id, 60000);
+    expect(done.status).toBe("done");
+    // testing 阶段重跑（round 记录）
+    expect(done.executions.filter((e) => e.stage === "testing").length).toBeGreaterThanOrEqual(1);
+    fresh.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("人工验收等待中的流水线不被恢复打扰", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pipeline-recover-"));
+    const first = makeHarness({ AUTO_ACCEPT: "false" }, DEFAULT_TEMPLATE, dir);
+    const p = await first.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("awaiting_acceptance");
+    expect(p.acceptancePending).toBe(true);
+    first.cleanup();
+    // 新实例 resume：应跳过（返回 0）
+    const fresh = makeHarness({ AUTO_ACCEPT: "false" }, DEFAULT_TEMPLATE, dir);
+    const resumed = await fresh.orchestrator.resumePending();
+    expect(resumed).toBe(0);
+    expect(fresh.store.get(p.id)?.status).toBe("awaiting_acceptance");
+    fresh.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("模板快照：触发后修改模板不影响已触发流水线", async () => {
+    // 自定义模板：含 testing
+    const tpl = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    tpl.name = "snap-tpl";
+    h = makeHarness({}, tpl);
+    // 触发（快照 = 含 testing）
+    const p = h.orchestrator.startSubmission(sampleSubmission);
+    // 立即修改注册表中的模板：去掉 testing
+    const mutated = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    mutated.name = "snap-tpl";
+    mutated.stages = mutated.stages.filter((s) => s.id !== "testing");
+    mutated.stages.find((s) => s.id === "dev_in_progress")!.onSuccess = "test_deploying";
+    h.orchestrator.registerTemplate("snap-tpl", mutated.stages);
+    // 已触发流水线仍按快照执行（含 testing）
+    const done = await h.orchestrator.awaitPipeline(p.id, 60000);
+    expect(done.status).toBe("done");
+    expect(done.executions.some((e) => e.stage === "testing")).toBe(true);
+    expect(done.templateSnapshot).toBeTruthy();
+  });
+
+  it("自定义 Agent：注册新角色并被模板使用", async () => {
+    h = makeHarness({});
+    // 注册自定义 agent（verdict: approved）
+    h.orchestrator.registerAgent({
+      name: "security-reviewer",
+      label: "安全评审 Agent",
+      description: "对交付做安全评审",
+      persona: "你是「安全评审 Agent」，评审交付物的安全性。",
+      outputSchema: '{ "approved": boolean, "issues": string[] }',
+      verdict: { passWhen: "approved", onFail: "rework" },
+    });
+    // 用自定义模板：dev → security_review → testing …
+    const tpl = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    tpl.name = "sec-tpl";
+    tpl.stages = [
+      { id: "evaluating", agent: "evaluator", onSuccess: "dev_in_progress" },
+      { id: "dev_in_progress", agent: "developer", onSuccess: "security_review" },
+      { id: "security_review", agent: "security-reviewer", onSuccess: "testing", reworkTarget: "dev_in_progress" },
+      ...tpl.stages.filter((s) => s.id !== "evaluating" && s.id !== "dev_in_progress"),
+    ];
+    h.orchestrator.registerTemplate("sec-tpl", tpl.stages);
+    const p = await h.orchestrator.handleSubmission({ ...sampleSubmission, policy: { template: "sec-tpl" } });
+    expect(p.status).toBe("done");
+    expect(p.executions.some((e) => e.stage === "security_review")).toBe(true);
+    // 自定义 agent 判定（approved）在 mock 下通过
+    expect(p.agents.security_review?.output?.approved).toBe(true);
+  });
+
+  it("内置 Agent 不可删除，自定义可删除", async () => {
+    h = makeHarness({});
+    expect(() => h.orchestrator.removeAgent("evaluator")).toThrow(/不允许删除/);
+    h.orchestrator.registerAgent({
+      name: "temp-agent",
+      persona: "p",
+      outputSchema: "{ approved: boolean }",
+      verdict: { passWhen: "approved", onFail: "rework" },
+    });
+    expect(h.orchestrator.hasAgent("temp-agent")).toBe(true);
+    h.orchestrator.removeAgent("temp-agent");
+    expect(h.orchestrator.hasAgent("temp-agent")).toBe(false);
+  });
+});

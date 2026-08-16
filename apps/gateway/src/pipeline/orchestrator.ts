@@ -8,7 +8,8 @@ import type { Notifier } from "../notify/notifier.js";
 import { SOURCE_LABEL } from "../forms/index.js";
 import { PipelineStore } from "./store.js";
 import { ev, isTerminal, transition } from "./state-machine.js";
-import { BUILTIN_STAGES, type AgentRole, type PipelineTemplate, type TemplateStage, type TemplateRegistry } from "./template.js";
+import { BUILTIN_STAGES, type PipelineTemplate, type TemplateStage, type TemplateRegistry } from "./template.js";
+import { type AgentRegistry, verdictOf } from "../agents/registry.js";
 import type { AppLogger } from "../logger.js";
 import type {
   AgentResult,
@@ -38,6 +39,8 @@ export interface OrchestratorDeps {
   notifier: Notifier;
   /** 模板注册表（平台多模板，流水线各自绑定互不干扰） */
   registry: TemplateRegistry;
+  /** Agent 定义注册表（内置 + 用户自定义扩展） */
+  agentRegistry: AgentRegistry;
   /** 默认模板名（触发未指定时使用） */
   defaultTemplate: string;
   logger?: AppLogger;
@@ -57,8 +60,14 @@ export class Orchestrator {
     return this.deps.logger;
   }
 
-  /** 流水线绑定的流程模板（按 p.templateName 从注册表取） */
+  /**
+   * 流水线绑定的流程模板：优先使用触发时的模板快照（模板后续修改不影响已触发流水线），
+   * 旧数据（无快照）回退按名从注册表取。
+   */
   private templateOf(p: Pipeline): PipelineTemplate {
+    if (p.templateSnapshot && typeof p.templateSnapshot === "object") {
+      return p.templateSnapshot as PipelineTemplate;
+    }
     return this.deps.registry.get(p.templateName);
   }
 
@@ -72,6 +81,20 @@ export class Orchestrator {
   }
 
   // ── 模板平台管理（供 Web 控制台/CLI 调用） ─────────────────────────────────
+
+  /** 动态注册/更新 Agent 定义（立即生效） */
+  registerAgent(def: import("../agents/registry.js").AgentDefinition): import("../agents/registry.js").AgentDefinition {
+    return this.deps.agentRegistry.save(def);
+  }
+
+  /** 删除 Agent 定义（内置不可删） */
+  removeAgent(name: string): void {
+    this.deps.agentRegistry.remove(name);
+  }
+
+  hasAgent(name: string): boolean {
+    return this.deps.agentRegistry.has(name);
+  }
 
   /** 动态注册/更新模板（立即生效） */
   registerTemplate(name: string, stages: unknown): PipelineTemplate {
@@ -138,7 +161,8 @@ export class Orchestrator {
   /** 表单提交入口：建流水线 → 异步驱动评估与后续阶段，立即返回 */
   startSubmission(sub: FormSubmission): Pipeline {
     const templateName = this.resolveTemplateName(sub);
-    const pipeline = this.deps.store.create(sub, templateName);
+    const template = this.deps.registry.get(templateName);
+    const pipeline = this.deps.store.create(sub, templateName, structuredClone(template));
     this.log?.info({ pipelineId: pipeline.id, trigger: sub.meta.triggerType, source: sub.source, title: sub.title, template: templateName }, "pipeline created");
     void this.drive(pipeline);
     return pipeline;
@@ -159,6 +183,59 @@ export class Orchestrator {
       if (p.status === "awaiting_acceptance" && p.acceptancePending) return p;
       if (Date.now() - start > timeoutMs) throw new Error(`等待流水线 ${id} 超时（${timeoutMs}ms）`);
       await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
+  /**
+   * 平台中断恢复：扫描非终态流水线自动续跑。
+   * - submitted → 从起始阶段开始；
+   * - 进行中阶段（evaluating/…/prod_deploying）→ 从该阶段重跑（幂等，executions 记录新轮次）；
+   * - awaiting_acceptance 且等待人工确认 → 跳过（不打扰人工闸门）；
+   * - 使用触发时的模板快照执行，模板修改不影响恢复。
+   */
+  async resumePending(): Promise<number> {
+    const pending = this.deps.store
+      .list()
+      .filter(
+        (p) =>
+          !isTerminal(p.status) &&
+          !(p.status === "awaiting_acceptance" && p.acceptancePending),
+      );
+    for (const p of pending) {
+      this.log?.info({ pipelineId: p.id, status: p.status }, "resume pending pipeline");
+      let next: Pipeline = {
+        ...p,
+        events: [...p.events, ev("recovered", { stage: p.status })],
+        updatedAt: new Date().toISOString(),
+      };
+      this.deps.store.save(next);
+      void this.driveRecovered(next);
+    }
+    return pending.length;
+  }
+
+  /** 恢复驱动：submitted 从起始阶段起跑；阶段态直接续跑该阶段 */
+  private async driveRecovered(p: Pipeline): Promise<void> {
+    try {
+      if (p.status === "submitted") {
+        const startStage = this.stageDefOf(p, "evaluating") ? "evaluating" : this.templateOf(p).stages[0]!.id;
+        await this.runStage(p, startStage);
+      } else {
+        await this.runStage(p, p.status);
+      }
+    } catch (err) {
+      const current = this.deps.store.get(p.id);
+      if (current && !isTerminal(current.status)) {
+        const message = err instanceof Error ? err.message : String(err);
+        const next: Pipeline = {
+          ...current,
+          status: "failed",
+          failure: { stage: "recovery", message },
+          events: [...current.events, ev("stage_failed", { stage: "recovery", message })],
+          updatedAt: new Date().toISOString(),
+        };
+        this.deps.store.save(next);
+      }
     }
   }
 
@@ -262,7 +339,8 @@ export class Orchestrator {
       agentResult = multi.agentResult;
     } else {
       const context = this.buildContext(current, stage, def);
-      const task = buildAgentTask(current, stage, def.agent, context, artifactsDir);
+      const agentDef = this.deps.agentRegistry.get(def.agent);
+      const task = buildAgentTask(current, stage, def.agent, agentDef, context, artifactsDir);
       try {
         const run = await this.deps.runner.run(task, artifactsDir);
         if (run.exitCode !== 0 || !run.parsed) {
@@ -328,7 +406,7 @@ export class Orchestrator {
 
   /** 通用自定义阶段：按角色判定 pass/fail/reject，按模板推进或打回 */
   private async afterGenericStage(p: Pipeline, def: TemplateStage, result: AgentResult): Promise<Pipeline> {
-    const verdict = genericVerdict(def.agent, result.output ?? {});
+    const verdict = verdictOf(this.deps.agentRegistry.get(def.agent), result.output ?? {});
     this.log?.info({ pipelineId: p.id, stage: def.id, agent: def.agent, verdict }, "generic stage verdict");
     if (verdict === "reject") {
       const reason = String((result.output?.reasons ?? result.output?.issues ?? ["未通过"]) as string[] | string).slice(0, 300);
@@ -380,7 +458,8 @@ export class Orchestrator {
       ctx: Record<string, unknown>,
     ): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string }> => {
       const dir = join(artifactsDir, svc);
-      const task = buildAgentTask(p, def.id, def.agent, ctx, dir);
+      const agentDef = this.deps.agentRegistry.get(def.agent);
+      const task = buildAgentTask(p, def.id, def.agent, agentDef, ctx, dir);
       try {
         const run = await this.deps.runner.run(task, dir);
         if (run.exitCode === 0 && run.parsed) return { ok: true, output: run.parsed };
@@ -703,23 +782,6 @@ export class Orchestrator {
 }
 
 /** 通用角色判定：阶段输出 → pass / fail / reject（reject 仅评估类） */
-export function genericVerdict(role: AgentRole, out: Record<string, unknown>): "pass" | "fail" | "reject" {
-  switch (role) {
-    case "evaluator":
-      return out.approved === true ? "pass" : "reject";
-    case "developer":
-      return out.status === "ok" || out.status === "skipped" ? "pass" : "fail";
-    case "tester":
-      return out.status === "pass" ? "pass" : "fail";
-    case "reviewer":
-      return out.approved === true ? "pass" : "fail";
-    case "ops":
-      return out.deployed === true ? "pass" : "fail";
-    case "acceptance":
-      return out.accepted === true ? "pass" : "fail";
-  }
-}
-
 function toDeployInfo(result: AgentResult, fallbackNs: string): DeployInfo {
   const out = result.output ?? {};
   return {

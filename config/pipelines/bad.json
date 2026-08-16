@@ -1,0 +1,15 @@
+{
+  "name": "bad",
+  "stages": [
+    {
+      "id": "a",
+      "agent": "not-a-role",
+      "onSuccess": "b"
+    },
+    {
+      "id": "b",
+      "agent": "developer",
+      "onSuccess": "done"
+    }
+  ]
+}

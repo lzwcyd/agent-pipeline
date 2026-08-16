@@ -70,6 +70,7 @@ export type PipelineEvent =
   | { type: "product_decision"; accepted: boolean; by: string; note?: string; at: string }
   | { type: "rework"; from: string; reason: string; at: string }
   | { type: "retried"; stage: string; at: string }
+  | { type: "recovered"; stage: string; at: string }
   | { type: "done"; at: string };
 
 /** 单个 Agent 的执行记录 */
@@ -115,6 +116,8 @@ export interface Pipeline {
   status: PipelineStatus;
   /** 使用的流程模板名 */
   templateName: string;
+  /** 触发时的模板快照（模板后续修改不影响已触发流水线；旧数据缺省回退注册表） */
+  templateSnapshot?: unknown;
   submission: FormSubmission;
   createdAt: string;
   updatedAt: string;
@@ -154,7 +157,8 @@ export interface PipelineExecution {
 /** Agent 任务的统一入参（会整体作为 headless 任务的 task 文本） */
 export interface AgentTask {
   pipelineId: string;
-  role: "evaluator" | "developer" | "tester" | "reviewer" | "ops" | "acceptance";
+  /** Agent 角色名（AgentRegistry 管理，内置 + 自定义） */
+  role: string;
   stage: string;
   requirement: {
     title: string;

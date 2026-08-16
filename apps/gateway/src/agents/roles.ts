@@ -1,17 +1,17 @@
 import type { AgentTask, Pipeline, StageKey } from "../types.js";
-import type { AgentRole } from "../pipeline/template.js";
-import { COMMON_RULES_TEXT, ROLE_PROMPTS } from "./prompts.js";
+import type { AgentDefinition } from "./registry.js";
+import { COMMON_RULES_TEXT } from "./prompts.js";
 
-/** 构建某阶段的 Agent 任务（role 由流程模板指定） */
+/** 构建某阶段的 Agent 任务（role 与 persona/schema 由 Agent 定义提供） */
 export function buildAgentTask(
   pipeline: Pipeline,
   stage: string,
-  role: AgentRole,
+  role: string,
+  agentDef: AgentDefinition,
   context: Record<string, unknown>,
   artifactsDir: string,
 ): AgentTask {
-  const prompt = ROLE_PROMPTS[role];
-  const modeNote = modeNoteFor(role, context);
+  const modeNote = modeNoteFor(role, agentDef, context);
   return {
     pipelineId: pipeline.id,
     role,
@@ -24,21 +24,21 @@ export function buildAgentTask(
       fields: pipeline.submission.fields,
     },
     context,
-    instructions: `${prompt.persona}
+    instructions: `${agentDef.persona}
 
 ${modeNote}
 
 输出 schema：
-${prompt.outputSchema}
+${agentDef.outputSchema}
 
 ${COMMON_RULES_TEXT}`,
-    outputSchema: prompt.outputSchema,
+    outputSchema: agentDef.outputSchema,
     artifactsDir,
   };
 }
 
-/** 按流水线模式与多服务联调阶段给角色补充行为说明 */
-function modeNoteFor(role: AgentRole, context: Record<string, unknown>): string {
+/** 按流水线模式与多服务联调阶段给角色补充行为说明（内置角色专属，自定义通用） */
+function modeNoteFor(role: string, agentDef: AgentDefinition, context: Record<string, unknown>): string {
   const real = context.pipelineMode === "real";
   const phase = context.phase;
   switch (role) {
@@ -70,6 +70,10 @@ function modeNoteFor(role: AgentRole, context: Record<string, unknown>): string 
         : "当前为「模拟部署模式」：不执行真实命令，给出完整部署/回滚计划与模拟证据（命令、预期输出、namespace/版本/访问地址），deployed 应反映计划是否可执行。";
     case "evaluator":
       return "评估对象为需求本身，与流水线模式无关。";
+    default:
+      return agentDef.builtin
+        ? "请严格按给定 schema 输出 JSON。"
+        : "自定义 Agent：请严格按给定 persona 与 schema 输出唯一 JSON 对象（不要围栏、不要解释）。";
   }
 }
 
@@ -173,4 +177,4 @@ function lastRejectReason(pipeline: Pipeline): string {
   return "验收未通过";
 }
 
-export type { AgentRole, StageKey };
+export type { StageKey };

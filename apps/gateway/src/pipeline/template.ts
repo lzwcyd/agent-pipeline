@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** 可用的 Agent 角色（内置 + 可扩展） */
-export type AgentRole = "evaluator" | "developer" | "tester" | "reviewer" | "ops" | "acceptance";
+/** Agent 角色名（由 AgentRegistry 管理，内置 + 用户自定义扩展） */
+export type AgentRole = string;
 
 /** 多 Agent 并行配置（如多开发 Agent 联调） */
 export interface MultiStageConfig {
@@ -57,11 +57,10 @@ export const DEFAULT_TEMPLATE: PipelineTemplate = {
   ],
 };
 
-const VALID_AGENTS: AgentRole[] = ["evaluator", "developer", "tester", "reviewer", "ops", "acceptance"];
 const TERMINALS = ["done", "rejected", "failed"];
 
-/** 从对象构造并校验模板（供文件加载与 Web 控制台复用） */
-export function parseTemplate(name: string, stages: unknown): PipelineTemplate {
+/** 从对象构造并校验模板（供文件加载与 Web 控制台复用）。validAgents 缺省不校验 agent 存在性 */
+export function parseTemplate(name: string, stages: unknown, validAgents?: string[]): PipelineTemplate {
   if (!name || typeof name !== "string") throw new Error("流程模板缺少 name");
   if (!Array.isArray(stages) || stages.length === 0) throw new Error("流程模板需要非空 stages 数组");
   const rawStages = stages as Array<Partial<TemplateStage>>;
@@ -73,8 +72,11 @@ export function parseTemplate(name: string, stages: unknown): PipelineTemplate {
   }
   for (const s of rawStages) {
     const agent = s.agent as AgentRole | undefined;
-    if (!agent || !VALID_AGENTS.includes(agent)) {
-      throw new Error(`流程模板阶段 ${s.id} 的 agent 非法：${s.agent}（可选：${VALID_AGENTS.join("/")}）`);
+    if (!agent) {
+      throw new Error(`流程模板阶段 ${s.id} 缺少 agent`);
+    }
+    if (validAgents && !validAgents.includes(agent)) {
+      throw new Error(`流程模板阶段 ${s.id} 的 agent 不存在：${s.agent}（可用：${validAgents.join(", ")}）`);
     }
     if (s.onSuccess && !ids.has(s.onSuccess) && !TERMINALS.includes(s.onSuccess)) {
       throw new Error(`流程模板阶段 ${s.id} 的 onSuccess 引用未定义阶段：${s.onSuccess}`);
@@ -107,9 +109,11 @@ export const BUILTIN_TEMPLATE_NAME = "default";
 export class TemplateRegistry {
   private readonly templates = new Map<string, PipelineTemplate>();
   private readonly dir?: string;
+  private readonly validAgents?: string[];
 
-  constructor(opts: { dir?: string; initial?: PipelineTemplate[] } = {}) {
+  constructor(opts: { dir?: string; initial?: PipelineTemplate[]; validAgents?: string[] } = {}) {
     this.dir = opts.dir;
+    this.validAgents = opts.validAgents;
     this.templates.set(BUILTIN_TEMPLATE_NAME, DEFAULT_TEMPLATE);
     for (const t of opts.initial ?? []) {
       if (t.name !== BUILTIN_TEMPLATE_NAME) this.templates.set(t.name, t);
@@ -160,7 +164,7 @@ export class TemplateRegistry {
     if (name === BUILTIN_TEMPLATE_NAME) {
       throw new Error(`不允许覆盖内置模板 ${BUILTIN_TEMPLATE_NAME}，请换一个模板名`);
     }
-    const parsed = parseTemplate(name, stages);
+    const parsed = parseTemplate(name, stages, this.validAgents);
     if (this.dir) {
       writeFileSync(join(this.dir, `${name}.json`), JSON.stringify(parsed, null, 2), "utf8");
     }

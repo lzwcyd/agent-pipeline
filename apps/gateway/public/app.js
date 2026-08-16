@@ -92,6 +92,7 @@ async function loadConfig() {
       .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`)
       .join("");
     renderTemplateList(tpl);
+    loadAgents();
   } catch (err) {
     $("#cfg-badge").textContent = "配置加载失败";
   }
@@ -174,6 +175,82 @@ $("#template-delete").addEventListener("click", async () => {
   } catch (err) {
     alert(`删除失败：${err.message}`);
   }
+});
+
+/* ── Agent 定义管理 ───────────────────────────────────────── */
+let currentAgents = null;
+
+async function loadAgents() {
+  try {
+    const { agents } = await api("/api/agents");
+    currentAgents = agents;
+    const sel = $("#agent-list");
+    sel.innerHTML = agents
+      .map((a) => `<option value="${esc(a.name)}">${esc(a.name)}${a.builtin ? "（内置）" : ""}${a.label ? " · " + esc(a.label) : ""}</option>`)
+      .join("");
+    if (agents[0]) selectAgent(agents[0]);
+  } catch { /* ignore */ }
+}
+
+function selectAgent(a) {
+  $("#agent-name").value = a.name;
+  $("#agent-name").disabled = a.builtin;
+  $("#agent-label").value = a.label || "";
+  $("#agent-persona").value = a.persona || "";
+  $("#agent-schema").value = a.outputSchema || "";
+  $("#agent-passwhen").value = a.verdict?.passWhen || "approved";
+  $("#agent-onfail").value = a.verdict?.onFail || "rework";
+  $("#agent-delete").disabled = a.builtin;
+  $("#agent-delete").dataset.name = a.name;
+}
+
+$("#agent-list").addEventListener("change", (e) => {
+  const a = currentAgents?.find((x) => x.name === e.target.value);
+  if (a) selectAgent(a);
+});
+
+$("#agent-new").addEventListener("click", () => {
+  $("#agent-name").value = "my-agent";
+  $("#agent-name").disabled = false;
+  $("#agent-label").value = "";
+  $("#agent-persona").value = "你是「我的自定义 Agent」。负责…";
+  $("#agent-schema").value = '{\n  "status": "ok"|"fail",\n  "summary": string,\n  "issues": string[]\n}';
+  $("#agent-passwhen").value = "status-ok";
+  $("#agent-onfail").value = "rework";
+  $("#agent-delete").disabled = true;
+});
+
+$("#agent-save").addEventListener("click", async () => {
+  const msg = $("#agent-msg");
+  msg.textContent = "保存中…";
+  try {
+    const def = {
+      name: $("#agent-name").value.trim(),
+      label: $("#agent-label").value.trim() || undefined,
+      persona: $("#agent-persona").value.trim(),
+      outputSchema: $("#agent-schema").value.trim(),
+      verdict: { passWhen: $("#agent-passwhen").value, onFail: $("#agent-onfail").value },
+    };
+    const r = await api("/api/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(def) });
+    msg.textContent = `✅ ${r.note}`;
+    msg.className = "result inline ok";
+    loadAgents();
+    loadConfig(); // 模板校验 agent 列表变化，刷新
+  } catch (err) {
+    msg.textContent = `❌ ${err.message}`;
+    msg.className = "result inline err";
+  }
+});
+
+$("#agent-delete").addEventListener("click", async () => {
+  const name = $("#agent-delete").dataset.name;
+  if (!name) return;
+  if (!confirm(`确定删除 Agent「${name}」？`)) return;
+  try {
+    await api(`/api/agents/${name}`, { method: "DELETE" });
+    loadAgents();
+    loadConfig();
+  } catch (err) { alert(`删除失败：${err.message}`); }
 });
 
 /* ── 进度与日志页签 ───────────────────────────────────────── */

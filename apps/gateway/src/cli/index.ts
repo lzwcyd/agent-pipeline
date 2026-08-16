@@ -8,6 +8,7 @@ import type { Notifier } from "../notify/notifier.js";
 import { startServer } from "../http/server.js";
 import { buildHistory } from "../pipeline/history.js";
 import type { TemplateRegistry } from "../pipeline/template.js";
+import type { AgentRegistry } from "../agents/registry.js";
 import type { AppLogger } from "../logger.js";
 
 export interface CliDeps {
@@ -19,6 +20,7 @@ export interface CliDeps {
   notifier: Notifier;
   logger: AppLogger;
   registry: TemplateRegistry;
+  agentRegistry: AgentRegistry;
   defaultTemplate: string;
 }
 
@@ -69,6 +71,16 @@ export function buildCli(deps: CliDeps): Command {
       // eslint-disable-next-line no-console
       console.log(`流水线 ${pipeline.id} 终态：${finished.status}`);
       await deps.notifier.close();
+    });
+
+  program
+    .command("agents")
+    .description("列出全部 Agent 定义（内置 + 自定义扩展）")
+    .action(() => {
+      for (const a of deps.agentRegistry.list()) {
+        // eslint-disable-next-line no-console
+        console.log(`- ${a.name}${a.builtin ? "（内置）" : "（自定义）"}${a.label ? " · " + a.label : ""}${a.description ? "：" + a.description : ""}`);
+      }
     });
 
   program

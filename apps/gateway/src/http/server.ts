@@ -8,6 +8,7 @@ import { FormParseError } from "../forms/index.js";
 import type { Orchestrator } from "../pipeline/orchestrator.js";
 import type { PipelineStore } from "../pipeline/store.js";
 import type { TemplateRegistry } from "../pipeline/template.js";
+import type { AgentRegistry } from "../agents/registry.js";
 import type { Pipeline } from "../types.js";
 import { buildHistory } from "../pipeline/history.js";
 import type { AppLogger } from "../logger.js";
@@ -18,6 +19,7 @@ export interface ServerDeps {
   orchestrator: Orchestrator;
   sources: Record<"mock" | "feishu" | "dingtalk" | "api", FormSource>;
   registry: TemplateRegistry;
+  agentRegistry: AgentRegistry;
   defaultTemplate: string;
   logger: AppLogger;
 }
@@ -55,6 +57,8 @@ export function createApp(deps: ServerDeps) {
         dingtalk: deps.sources.dingtalk.isConfigured(),
         api: deps.sources.api.isConfigured(),
       },
+      agents: deps.agentRegistry.names().length,
+      templates: deps.registry.names().length,
       kubectlAvailable: checkKubectl(),
       webUi: true,
     });
@@ -204,6 +208,43 @@ export function createApp(deps: ServerDeps) {
         })),
       })),
     });
+  });
+
+  // ── Agent 定义管理（平台：内置 + 用户自定义扩展）──────────────────────────
+  app.get("/api/agents", (_req, res) => {
+    res.json({
+      agents: deps.agentRegistry.list().map((a) => ({
+        name: a.name,
+        label: a.label,
+        description: a.description,
+        persona: a.persona,
+        outputSchema: a.outputSchema,
+        verdict: a.verdict,
+        builtin: a.builtin,
+      })),
+    });
+  });
+
+  app.post("/api/agents", (req: Request, res: Response) => {
+    try {
+      const def = req.body as Parameters<AgentRegistry["save"]>[0];
+      const saved = deps.agentRegistry.save(def);
+      deps.logger.info({ agent: saved.name }, "agent definition saved");
+      res.json({ ok: true, name: saved.name, note: `Agent「${saved.name}」已注册，模板 agent 字段即可引用。` });
+    } catch (err) {
+      respondError(res, err);
+    }
+  });
+
+  app.delete("/api/agents/:name", (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as string;
+      deps.agentRegistry.remove(name);
+      deps.logger.info({ agent: name }, "agent definition deleted");
+      res.json({ ok: true, name });
+    } catch (err) {
+      respondError(res, err);
+    }
   });
 
   // ── 日志查询 ───────────────────────────────────────────────────────────────

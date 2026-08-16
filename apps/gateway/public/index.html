@@ -90,6 +90,56 @@
           <span id="template-msg" class="result inline"></span>
         </div>
       </div>
+
+      <div class="card">
+        <h2>Agent 定义管理（内置 + 用户自定义扩展）</h2>
+        <p class="hint">
+          Agent 定义 = 角色名 + persona + 输出 schema + 判定规则（verdict）。
+          内置 6 个 Agent 不可删除；自定义 Agent 保存后即可被模板的 <code>agent</code> 字段引用。
+        </p>
+        <div class="row">
+          <select id="agent-list"></select>
+          <button id="agent-new" class="ghost">＋ 新建 Agent</button>
+          <button id="agent-delete" class="ghost danger">🗑 删除</button>
+        </div>
+        <div class="grid2">
+          <div>
+            <label>Agent 名 *（模板 agent 字段引用）</label>
+            <input id="agent-name" placeholder="如 security-reviewer" />
+          </div>
+          <div>
+            <label>展示名</label>
+            <input id="agent-label" placeholder="如 安全评审 Agent" />
+          </div>
+        </div>
+        <label>persona（角色定位，拼入 agent 指令）</label>
+        <textarea id="agent-persona" rows="4"></textarea>
+        <label>输出 schema（JSON 结构描述）</label>
+        <textarea id="agent-schema" rows="6"></textarea>
+        <div class="grid2">
+          <div>
+            <label>判定规则 passWhen（通过条件）</label>
+            <select id="agent-passwhen">
+              <option value="approved">approved === true</option>
+              <option value="status-ok">status === ok/skipped</option>
+              <option value="status-pass">status === pass</option>
+              <option value="deployed">deployed === true</option>
+              <option value="accepted">accepted === true</option>
+            </select>
+          </div>
+          <div>
+            <label>不通过时 onFail</label>
+            <select id="agent-onfail">
+              <option value="rework">打回开发（rework）</option>
+              <option value="reject">终止流水线（reject）</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <button id="agent-save" class="primary">💾 保存 Agent（立即生效）</button>
+          <span id="agent-msg" class="result inline"></span>
+        </div>
+      </div>
     </section>
 
     <!-- ═══════════ 进度与日志 ═══════════ -->

@@ -12,6 +12,7 @@ import { createLogger } from "../src/logger.js";
 import { createFormSources } from "../src/forms/index.js";
 import { createApp, type ServerDeps } from "../src/http/server.js";
 import { DEFAULT_TEMPLATE, TemplateRegistry } from "../src/pipeline/template.js";
+import { AgentRegistry } from "../src/agents/registry.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const MOCK_DSH = join(REPO_ROOT, "scripts", "mock-dsh.mjs");
@@ -40,9 +41,10 @@ async function makeHttpHarness(env: Record<string, string> = {}): Promise<HttpHa
   const notifier = new CompositeNotifier(cfg);
   const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
   const sources = createFormSources(cfg);
-  const registry = new TemplateRegistry({ dir: cfg.templatesDir, initial: [DEFAULT_TEMPLATE] });
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, defaultTemplate: "default", logger });
-  const deps: ServerDeps = { cfg, store, orchestrator, sources, registry, defaultTemplate: "default", logger };
+  const agentRegistry = new AgentRegistry();
+  const registry = new TemplateRegistry({ dir: cfg.templatesDir, initial: [DEFAULT_TEMPLATE], validAgents: agentRegistry.names() });
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, agentRegistry, defaultTemplate: "default", logger });
+  const deps: ServerDeps = { cfg, store, orchestrator, sources, registry, agentRegistry, defaultTemplate: "default", logger };
   const app = createApp(deps);
   const server: Server = await new Promise((r) => {
     const s = app.listen(0, "127.0.0.1", () => r(s));

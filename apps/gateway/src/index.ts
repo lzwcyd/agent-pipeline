@@ -7,6 +7,7 @@ import { createFormSources } from "./forms/index.js";
 import { PipelineStore } from "./pipeline/store.js";
 import { Orchestrator } from "./pipeline/orchestrator.js";
 import { TemplateRegistry, loadTemplate } from "./pipeline/template.js";
+import { AgentRegistry } from "./agents/registry.js";
 import { CompositeNotifier } from "./notify/notifier.js";
 import { createLogger } from "./logger.js";
 import { buildCli } from "./cli/index.js";
@@ -17,8 +18,11 @@ async function main() {
   const cfg = loadConfig();
   const logger = createLogger({ level: cfg.LOG_LEVEL, logsDir: cfg.logsDir });
 
-  // 模板注册表：扫描 config/pipelines/*.json 全量注册
-  const registry = new TemplateRegistry({ dir: cfg.templatesDir });
+  // Agent 定义注册表：内置 6 个 + config/agents/*.json 自定义扩展
+  const agentRegistry = new AgentRegistry({ dir: join(cfg.repoRoot, "config", "agents") });
+
+  // 模板注册表：扫描 config/pipelines/*.json 全量注册（校验 agent 存在性）
+  const registry = new TemplateRegistry({ dir: cfg.templatesDir, validAgents: agentRegistry.names() });
   // 兼容旧配置：PIPELINE_TEMPLATE 为文件路径时注册为额外模板并设为默认；否则视为模板名
   let defaultTemplate = "default";
   if (cfg.PIPELINE_TEMPLATE) {
@@ -39,15 +43,20 @@ async function main() {
       }
     }
   }
-  logger.info({ templates: registry.names(), defaultTemplate }, "pipeline templates loaded");
+  logger.info({ templates: registry.names(), agents: agentRegistry.names(), defaultTemplate }, "platform registries loaded");
 
   const notifier = new CompositeNotifier(cfg);
   const store = new PipelineStore(cfg.pipelinesDir);
   const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
   const sources = createFormSources(cfg);
-  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, defaultTemplate, logger });
+  const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, agentRegistry, defaultTemplate, logger });
 
-  const program = buildCli({ cfg, store, orchestrator, runner, sources, notifier, logger, registry, defaultTemplate });
+  // 平台中断恢复：启动后自动续跑未完成的流水线（后台执行）
+  void orchestrator.resumePending().then((n) => {
+    if (n > 0) logger.info({ resumed: n }, "pending pipelines resumed");
+  });
+
+  const program = buildCli({ cfg, store, orchestrator, runner, sources, notifier, logger, registry, agentRegistry, defaultTemplate });
   program.parseAsync(process.argv).catch((err) => {
     logger.error({ err: err instanceof Error ? err.message : String(err) }, "cli error");
     process.exitCode = 1;
