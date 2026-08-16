@@ -20,8 +20,8 @@ export interface TemplateStage {
   onSuccess: string;
   /** 失败后打回的目标阶段（缺省直接 failed；testing/验收等默认打回开发） */
   reworkTarget?: string;
-  /** 运维阶段配置（action: deploy|rollback；env: test|prod） */
-  ops?: { action: "deploy" | "rollback"; env: "test" | "prod" };
+  /** 运维阶段配置（action: deploy|rollback；env: test|prod；target: k8s|ssh 部署目标） */
+  ops?: { action: "deploy" | "rollback"; env: "test" | "prod"; target?: "k8s" | "ssh" };
   /** 多 Agent 并行配置 */
   multi?: MultiStageConfig;
 }

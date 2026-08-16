@@ -33,7 +33,7 @@
 - **平台韧性**：进程重启后**自动恢复**未完成的流水线（从断点续跑，人工验收等待不受打扰）。
 - **多开发 Agent 联调**：开发阶段支持 `multi` 配置，多服务并行开发，**契约轮 → 汇总广播 → 实现轮**模拟团队联调，见 [docs/usage.md](docs/usage.md#5-多开发-agent-并行联调分布式系统)。
 - **表单接入**：可插拔适配器。`mock`（模拟器）随时可用；`feishu`/`dingtalk` 适配器已实现验签与字段归一化；另有**标准接口触发** `POST /api/pipelines`。
-- **部署**：Kubernetes（kubectl 模式），无集群时自动降级为 simulated 模式（输出完整部署计划与证据）。
+- **部署**：支持 **Kubernetes（kubectl）** 与 **KVM/传统服务器（SSH：scp + systemctl）** 两种目标，可模板按环境指定；无真实目标时自动降级 simulated（输出完整计划与证据）。
 - **日志**：pino 结构化日志（console + `data/logs/pipeline.log`），支持 `GET /api/logs` 查询。
 - **开发模式**：`PIPELINE_MODE=simulation`（默认）产出方案文档；`real` 模式要求真实代码与真实部署。
 

@@ -23,6 +23,16 @@ const envSchema = z.object({
     .default("true")
     .transform((v) => v !== "false" && v !== "0"),
   OPS_MODE: z.enum(["auto", "kubectl", "simulated"]).default("auto"),
+  /** 部署目标：auto（配了 SSH 主机则 ssh，否则 k8s）| k8s | ssh（KVM/传统服务器） */
+  OPS_TARGET: z.enum(["auto", "k8s", "ssh"]).default("auto"),
+  /** SSH 部署配置（target=ssh 时使用） */
+  OPS_SSH_HOST: z.string().optional(),
+  OPS_SSH_USER: z.string().default("root"),
+  OPS_SSH_PORT: z.coerce.number().default(22),
+  OPS_SSH_DEPLOY_DIR: z.string().default("/opt/my-app"),
+  OPS_SSH_SERVICE: z.string().default("my-app"),
+  /** 构建产物路径/glob（相对 dev 产物目录，如 dist/、target/*.jar） */
+  OPS_SSH_ARTIFACT: z.string().default("dist"),
   PIPELINE_MODE: z.enum(["simulation", "real"]).default("simulation"),
   /** 验收失败时的默认处理：rollback（回滚测试环境后打回开发）| rework（直接打回开发）| reject（直接终止） */
   ACCEPTANCE_FAILURE_POLICY: z.enum(["rollback", "rework", "reject"]).default("rollback"),

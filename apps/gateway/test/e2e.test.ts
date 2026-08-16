@@ -578,3 +578,58 @@ describe("平台韧性：崩溃恢复、模板快照、自定义 Agent", () => {
     expect(h.orchestrator.hasAgent("temp-agent")).toBe(false);
   });
 });
+
+describe("部署目标：K8s 与 KVM/SSH 可配置", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = makeHarness();
+  });
+  afterEach(() => h?.cleanup());
+
+  it("SSH 部署目标（模板 ops.target=ssh）：全链路 done，证据含 scp/systemctl", async () => {
+    const tpl = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    tpl.name = "kvm-deploy";
+    for (const s of tpl.stages) {
+      if (s.id === "test_deploying" || s.id === "prod_deploying" || s.id === "test_rollback") {
+        s.ops = { ...s.ops, target: "ssh" as const };
+      }
+    }
+    h.cleanup();
+    h = makeHarness(
+      { OPS_SSH_HOST: "10.20.30.40", OPS_SSH_SERVICE: "myapp", OPS_SSH_DEPLOY_DIR: "/opt/myapp" },
+      tpl,
+    );
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    // 部署信息：test 阶段 target=ssh，主机 10.20.30.40
+    expect(p.deploy?.test?.namespace).toContain("10.20.30.40");
+    const testEvidence = p.deploy?.test?.evidence ?? [];
+    expect(testEvidence.some((e) => e.includes("scp"))).toBe(true);
+    expect(testEvidence.some((e) => e.includes("systemctl"))).toBe(true);
+    expect(p.deploy?.prod?.namespace).toContain("10.20.30.40");
+  });
+
+  it("OPS_TARGET=auto：配置了 SSH 主机则默认走 ssh，否则 k8s", async () => {
+    h.cleanup();
+    h = makeHarness({ OPS_SSH_HOST: "10.0.0.1" });
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    // mock 的 ssh 分支输出 namespace=host
+    expect(p.deploy?.test?.namespace).toContain("10.0.0.1");
+  });
+
+  it("验收失败回滚在 SSH 目标下同样生效（恢复上一版产物）", async () => {
+    const tpl = loadTemplate(join(REPO_ROOT, "config", "pipelines", "default.json"));
+    tpl.name = "kvm-rollback";
+    for (const s of tpl.stages) {
+      if (s.id === "test_deploying" || s.id === "test_rollback") s.ops = { ...s.ops, target: "ssh" as const };
+    }
+    h.cleanup();
+    h = makeHarness({ MOCK_ACCEPT_REJECT_ONCE: "1", OPS_SSH_HOST: "10.0.0.2" }, tpl);
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    expect(p.reworkCount).toBe(1);
+    const rollbackEvidence = p.agents.test_rollback?.output?.evidence ?? [];
+    expect(rollbackEvidence.some((e) => e.includes("systemctl restart"))).toBe(true);
+  });
+});

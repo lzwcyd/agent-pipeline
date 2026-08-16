@@ -169,9 +169,30 @@ switch (role) {
   case "ops": {
     const isRollback = task?.context?.ops?.action === "rollback";
     const env = task?.context?.deployTarget?.environment === "prod" ? "prod" : "test";
+    const target = task?.context?.ops?.target === "ssh" ? "ssh" : "k8s";
+    const ssh = task?.context?.ops?.ssh ?? {};
     const ns = isRollback
       ? task?.context?.rollback?.deployInfo?.namespace ?? "demo-test"
       : task?.context?.deployTarget?.namespace ?? "demo-test";
+    if (target === "ssh") {
+      // SSH 部署（KVM/传统服务器）：模拟证据
+      const host = ssh.host ?? "10.0.0.10";
+      const svc = ssh.service ?? "my-app";
+      const dir = ssh.deployDir ?? "/opt/my-app";
+      output = {
+        deployed: process.env.MOCK_SSH_FAIL !== "1",
+        mode: "simulated",
+        target: "ssh",
+        namespace: host,
+        revision: task?.context?.deployTarget?.version ?? "v1.1.0",
+        url: `http://${host}:8080/healthz`,
+        evidence: isRollback
+          ? [`scp backup/${svc}.prev ${host}:${dir}/${svc} （模拟）`, `ssh ${host} "systemctl restart ${svc}" （模拟）`, "回滚完成，服务已恢复上一版本"]
+          : [`scp ${ssh.artifact ?? "dist"} ${host}:${dir}/ （模拟）`, `ssh ${host} "systemctl restart ${svc}" （模拟）`, "curl 健康检查 200 OK"],
+        warnings: [],
+      };
+      break;
+    }
     if (isRollback) {
       output = {
         deployed: process.env.MOCK_ROLLBACK_FAIL !== "1",

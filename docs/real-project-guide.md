@@ -87,6 +87,34 @@ docker push <registry>/my-app:v1.2.0
 
 开发 Agent 输出的 `version`（如 v1.2.0）会传给运维 Agent；kustomize 清单中把镜像 tag 参数化（例如 `images: - name: <image> newTag: v1.2.0`），运维 Agent 会用该版本 apply。需要时可在流程模板中插入一个"构建"阶段（自定义 Agent，负责 `docker build && push`），再接运维阶段。
 
+### 3.5 部署到 KVM / 传统服务器（SSH）
+
+不只支持 K8s：运维 Agent 也支持通过 **SSH 部署到 KVM/传统服务器**（scp 产物 + systemctl 重启 + 健康检查）。
+
+```bash
+OPS_TARGET=ssh             # 或 auto（配了 SSH 主机即 ssh）
+OPS_SSH_HOST=10.20.30.40   # KVM 机器 IP/域名
+OPS_SSH_USER=root
+OPS_SSH_PORT=22
+OPS_SSH_DEPLOY_DIR=/opt/my-app     # 产物上传目录
+OPS_SSH_SERVICE=my-app             # systemd 服务名
+OPS_SSH_ARTIFACT=dist              # 产物路径/glob（相对开发产物目录）
+```
+
+- 流程：`scp <artifact> → <deployDir>` → `systemctl restart <service>` → `curl 健康检查`；
+- **回滚**：恢复上一份产物并重启服务（验收失败回滚同样生效）；
+- 模板可按环境指定目标：测试环境走 K8s、生产走 KVM，或都走 SSH：
+
+```jsonc
+{ "id": "test_deploying", "agent": "ops", "onSuccess": "awaiting_acceptance",
+  "ops": { "action": "deploy", "env": "test", "target": "ssh" } },
+{ "id": "prod_deploying", "agent": "ops", "onSuccess": "done",
+  "ops": { "action": "deploy", "env": "prod", "target": "ssh" } }
+```
+
+> 无目标机器时可先用 `OPS_MODE=simulated` 跑通流程（输出 scp/systemctl 计划与模拟证据）；
+> 真实 SSH 使用本机 `~/.ssh` 凭证，需保证网关进程可免密登录目标机。
+
 ## 4. 流程模板建议（真实工程）
 
 ```jsonc

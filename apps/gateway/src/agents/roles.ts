@@ -122,6 +122,7 @@ export function buildStageContext(
       base["deployTarget"] = {
         environment: env,
         namespace: namespaceForEnv(env, extra),
+        target: ops.target ?? "k8s",
         version: pipeline.agents.dev_in_progress?.output?.version ?? "latest",
       };
       break;
@@ -141,6 +142,7 @@ export function buildStageContext(
       base["deployTarget"] = {
         environment: env,
         namespace: namespaceForEnv(env, extra),
+        target: ops.target ?? "k8s",
         version: pipeline.agents.dev_in_progress?.output?.version ?? "latest",
       };
       base["testDeployInfo"] = pipeline.deploy?.test;

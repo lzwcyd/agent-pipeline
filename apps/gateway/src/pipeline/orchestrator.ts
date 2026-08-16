@@ -754,14 +754,29 @@ export class Orchestrator {
       const mode = this.deps.cfg.OPS_MODE === "auto" ? (this.hasKubectl() ? "kubectl" : "simulated") : this.deps.cfg.OPS_MODE;
       const env = def.ops?.env ?? "test";
       const namespace = env === "prod" ? this.deps.cfg.opsProdNamespace : this.deps.cfg.opsTestNamespace;
+      const target = def.ops?.target ?? this.resolveOpsTarget();
       ctx.ops = {
         mode,
+        target,
         manifestsDir: this.deps.cfg.opsManifestsDir,
         overlayDir: env === "prod" ? "overlays/prod" : "overlays/test",
         action: def.ops?.action ?? "deploy",
         env,
         namespace,
         image: ctx.image,
+        ...(target === "ssh"
+          ? {
+              ssh: {
+                host: this.deps.cfg.OPS_SSH_HOST,
+                user: this.deps.cfg.OPS_SSH_USER,
+                port: this.deps.cfg.OPS_SSH_PORT,
+                deployDir: this.deps.cfg.OPS_SSH_DEPLOY_DIR,
+                service: this.deps.cfg.OPS_SSH_SERVICE,
+                artifact: this.deps.cfg.OPS_SSH_ARTIFACT,
+                workspaceDir: this.deps.cfg.devWorkspaceDir,
+              },
+            }
+          : {}),
       };
     }
     // 真实工程模式：开发 Agent 注入目标工程目录
@@ -770,6 +785,13 @@ export class Orchestrator {
       ctx.workspaceDir = this.deps.cfg.devWorkspaceDir;
     }
     return buildStageContext(p, stage, ctx);
+  }
+
+  /** 解析部署目标：模板 ops.target > OPS_TARGET（auto：配了 SSH 主机则 ssh，否则 k8s） */
+  private resolveOpsTarget(): "k8s" | "ssh" {
+    const t = this.deps.cfg.OPS_TARGET;
+    if (t === "k8s" || t === "ssh") return t;
+    return this.deps.cfg.OPS_SSH_HOST ? "ssh" : "k8s";
   }
 
   private hasKubectl(): boolean {
