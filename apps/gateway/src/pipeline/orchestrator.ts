@@ -55,8 +55,8 @@ interface MultiRunResult {
 
 export class Orchestrator {
   constructor(private readonly deps: OrchestratorDeps) {
-    // 让 headless agent 的沙箱覆盖整个工作区（真实工程模式需要读写 data/workspace/<project>）
-    process.env.PIPELINE_WORKSPACE_ROOT = deps.cfg.dataDir;
+    // headless agent 沙箱根：有目标工程用工程根（任意路径），否则 data 根
+    process.env.PIPELINE_WORKSPACE_ROOT = deps.cfg.workspaceRoot;
   }
 
   private get log(): AppLogger | undefined {
@@ -779,10 +779,10 @@ export class Orchestrator {
           : {}),
       };
     }
-    // 真实工程模式：开发 Agent 注入目标工程目录
-    if (this.deps.cfg.PIPELINE_MODE === "real" && def.agent === "developer" && this.deps.cfg.devProjectDir) {
-      ctx.repoDir = join(this.deps.cfg.devWorkspaceDir, this.deps.cfg.devProjectDir);
-      ctx.workspaceDir = this.deps.cfg.devWorkspaceDir;
+    // 真实工程模式：开发 Agent 注入目标工程目录（任意路径）
+    if (this.deps.cfg.PIPELINE_MODE === "real" && def.agent === "developer" && this.deps.cfg.projectRoot) {
+      ctx.repoDir = this.deps.cfg.projectRoot;
+      ctx.workspaceDir = this.deps.cfg.workspaceRoot;
     }
     return buildStageContext(p, stage, ctx);
   }

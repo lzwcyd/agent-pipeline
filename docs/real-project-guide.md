@@ -15,21 +15,21 @@ PIPELINE_MODE=real
 
 ## 2. 工程目录设置
 
+工程目录**可以放在任意位置**——不必在 agent-pipeline 源码下。两种方式：
+
 ```bash
-# 1) 在网关工作区创建工程目录
-cd <agent-pipeline 仓库根>
-mkdir -p data/workspace
-
-# 2) 把你的工程 clone 进来（或复制现有工程）
-cd data/workspace
-git clone <你的工程远程地址> my-project     # 或 cp -r /path/to/my-project .
-
-# 3) 配置 .env
+# 方式 A：直接指定工程绝对路径（推荐，任意位置）
 PIPELINE_MODE=real
-DEV_PROJECT_DIR=my-project
+DEV_PROJECT_PATH=/Users/<you>/coding/my-app
+
+# 方式 B：放在网关工作区（相对路径）
+cd <agent-pipeline 仓库根> && mkdir -p data/workspace
+cd data/workspace && git clone <你的工程远程地址> my-project
+PIPELINE_MODE=real
+DEV_PROJECT_DIR=my-project        # 也支持绝对路径（等价方式 A）
 ```
 
-**沙箱说明**：网关会把 `PIPELINE_WORKSPACE_ROOT`（= data 根）注入 headless profile，Agent 的文件/命令沙箱覆盖整个 `data/`——开发 Agent 可以读写 `data/workspace/my-project/`，但不能越出工作区（安全边界）。修改 profile 后需**重启网关**（无需重装 profile，patch 已在仓库与 `~/.dsh/profiles/headless/` 同步）。
+**沙箱说明**：网关把 `PIPELINE_WORKSPACE_ROOT` 注入 headless profile 的 `fs-sandbox.cwd`，Agent 的文件/命令沙箱根 = **目标工程根**——开发 Agent 可以读写整个工程目录（含任意路径的外部工程），但不能越出工程（安全边界）。工程外置时，流水线产物存放在工程内的 `.agent-pipeline/artifacts/`（建议加入工程的 `.gitignore`）。修改 profile 后需**重启网关**。
 
 **git 提交**：开发 Agent 会用本机 git 凭证执行 `git checkout -b feature/...`、`git add/commit`、`git push`（`context.repoDir` 注入，persona 已含真实开发指令）。
 
@@ -161,7 +161,7 @@ curl -X POST http://127.0.0.1:3081/api/pipelines -H 'Content-Type: application/j
 
 | 问题 | 处理 |
 | --- | --- |
-| 开发 Agent 无法写入工程目录 | 确认 `PIPELINE_WORKSPACE_ROOT` 生效（重启网关）；工程必须在 `data/workspace/` 内 |
+| 开发 Agent 无法写入工程目录 | 确认 `PIPELINE_WORKSPACE_ROOT` 生效（重启网关）；工程目录需在 `DEV_PROJECT_PATH`/`DEV_PROJECT_DIR` 中正确指定，Agent 沙箱根=工程根 |
 | 部署失败"找不到清单" | `OPS_MANIFESTS_DIR` 相对 agent-pipeline 仓库根；确认 base/overlays 结构 |
 | 镜像版本不一致 | 预构建并推送 `version` 对应的镜像；kustomize 用 `images.newTag` 参数化 |
 | git push 失败 | 本机 git 凭证需可 push 目标仓库（agent 使用本机凭证） |

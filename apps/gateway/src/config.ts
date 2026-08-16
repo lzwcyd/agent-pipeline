@@ -44,8 +44,10 @@ const envSchema = z.object({
   PIPELINE_TEMPLATES_DIR: z.string().default("config/pipelines"),
   /** 真实工程工作区（相对仓库根）：目标工程目录放这里，开发 Agent 可读写 */
   DEV_WORKSPACE_DIR: z.string().default("data/workspace"),
-  /** 目标工程目录名（相对 DEV_WORKSPACE_DIR，real 模式下开发 Agent 的工作仓库） */
+  /** 目标工程目录（real 模式开发 Agent 的工作仓库）：相对 DEV_WORKSPACE_DIR，或以 / 开头的绝对路径 */
   DEV_PROJECT_DIR: z.string().optional(),
+  /** 目标工程绝对路径（优先于 DEV_PROJECT_DIR；工程可放在任意位置，无需在本项目源码下） */
+  DEV_PROJECT_PATH: z.string().optional(),
   /** 运维清单目录（相对仓库根；缺省 k8s/demo-app） */
   OPS_MANIFESTS_DIR: z.string().default("k8s/demo-app"),
   /** 测试/生产命名空间（缺省 demo-test / demo-prod） */
@@ -79,18 +81,32 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   }
   const repoRoot = resolveRepoRoot();
   const dataDir = resolve(repoRoot, parsed.data.PIPELINE_DATA_DIR);
+  // 目标工程根：DEV_PROJECT_PATH（绝对）优先；DEV_PROJECT_DIR 支持相对或绝对
+  let projectRoot: string | undefined;
+  if (parsed.data.DEV_PROJECT_PATH) {
+    projectRoot = resolve(parsed.data.DEV_PROJECT_PATH);
+  } else if (parsed.data.DEV_PROJECT_DIR) {
+    projectRoot = parsed.data.DEV_PROJECT_DIR.startsWith("/")
+      ? resolve(parsed.data.DEV_PROJECT_DIR)
+      : resolve(repoRoot, parsed.data.DEV_WORKSPACE_DIR, parsed.data.DEV_PROJECT_DIR);
+  }
   return {
     ...parsed.data,
     repoRoot,
     dataDir,
+    projectRoot,
     pipelinesDir: join(dataDir, "pipelines"),
-    artifactsRoot: join(dataDir, "artifacts"),
+    // 项目外置时 artifacts 挪进项目内（agent 沙箱根=项目，需保证可写）
+    artifactsRoot: projectRoot ? join(projectRoot, ".agent-pipeline", "artifacts") : join(dataDir, "artifacts"),
+    // agent 沙箱根：有项目用项目根，否则 data 根
+    workspaceRoot: projectRoot ?? dataDir,
     logsDir: join(dataDir, "logs"),
     k8sManifestsDir: join(repoRoot, "k8s", "demo-app"),
     // 模板注册目录相对仓库根解析
     templatesDir: resolve(repoRoot, parsed.data.PIPELINE_TEMPLATES_DIR),
     devWorkspaceDir: resolve(repoRoot, parsed.data.DEV_WORKSPACE_DIR),
     devProjectDir: parsed.data.DEV_PROJECT_DIR,
+    devProjectPath: parsed.data.DEV_PROJECT_PATH,
     opsManifestsDir: resolve(repoRoot, parsed.data.OPS_MANIFESTS_DIR),
     opsTestNamespace: parsed.data.OPS_TEST_NAMESPACE,
     opsProdNamespace: parsed.data.OPS_PROD_NAMESPACE,

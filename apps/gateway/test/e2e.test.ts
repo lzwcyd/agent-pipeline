@@ -633,3 +633,31 @@ describe("部署目标：K8s 与 KVM/SSH 可配置", () => {
     expect(rollbackEvidence.some((e) => e.includes("systemctl restart"))).toBe(true);
   });
 });
+
+describe("任意路径项目目录（DEV_PROJECT_PATH）", () => {
+  let h: Harness;
+  afterEach(() => h?.cleanup());
+
+  it("项目外置（绝对路径）：流水线 done，产物落在项目 .agent-pipeline 内", async () => {
+    const projDir = mkdtempSync(join(tmpdir(), "ext-project-"));
+    h = makeHarness({ PIPELINE_MODE: "real", DEV_PROJECT_PATH: projDir });
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    // repoDir 注入正确
+    expect(p.agents.dev_in_progress?.output).toBeTruthy();
+    // 产物在项目内 .agent-pipeline/artifacts
+    expect(h.cfg.projectRoot).toBe(projDir);
+    expect(h.cfg.artifactsRoot).toBe(join(projDir, ".agent-pipeline", "artifacts"));
+    expect(p.artifacts.some((a) => a.path.includes(".agent-pipeline"))).toBe(true);
+    rmSync(projDir, { recursive: true, force: true });
+  });
+
+  it("DEV_PROJECT_DIR 支持绝对路径（等价于 DEV_PROJECT_PATH）", async () => {
+    const projDir = mkdtempSync(join(tmpdir(), "ext-project2-"));
+    h = makeHarness({ PIPELINE_MODE: "real", DEV_PROJECT_DIR: projDir });
+    expect(h.cfg.projectRoot).toBe(projDir);
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    rmSync(projDir, { recursive: true, force: true });
+  });
+});
