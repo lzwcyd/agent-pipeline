@@ -32,6 +32,15 @@ const envSchema = z.object({
   PIPELINE_TEMPLATE: z.string().optional(),
   /** 模板注册目录（扫描 *.json 全量注册，Web 保存也写入这里） */
   PIPELINE_TEMPLATES_DIR: z.string().default("config/pipelines"),
+  /** 真实工程工作区（相对仓库根）：目标工程目录放这里，开发 Agent 可读写 */
+  DEV_WORKSPACE_DIR: z.string().default("data/workspace"),
+  /** 目标工程目录名（相对 DEV_WORKSPACE_DIR，real 模式下开发 Agent 的工作仓库） */
+  DEV_PROJECT_DIR: z.string().optional(),
+  /** 运维清单目录（相对仓库根；缺省 k8s/demo-app） */
+  OPS_MANIFESTS_DIR: z.string().default("k8s/demo-app"),
+  /** 测试/生产命名空间（缺省 demo-test / demo-prod） */
+  OPS_TEST_NAMESPACE: z.string().default("demo-test"),
+  OPS_PROD_NAMESPACE: z.string().default("demo-prod"),
   /** 日志级别：trace|debug|info|warn|error */
   LOG_LEVEL: z.string().default("info"),
   NOTIFY_CHANNELS: z.string().default("console"),
@@ -70,6 +79,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     k8sManifestsDir: join(repoRoot, "k8s", "demo-app"),
     // 模板注册目录相对仓库根解析
     templatesDir: resolve(repoRoot, parsed.data.PIPELINE_TEMPLATES_DIR),
+    devWorkspaceDir: resolve(repoRoot, parsed.data.DEV_WORKSPACE_DIR),
+    devProjectDir: parsed.data.DEV_PROJECT_DIR,
+    opsManifestsDir: resolve(repoRoot, parsed.data.OPS_MANIFESTS_DIR),
+    opsTestNamespace: parsed.data.OPS_TEST_NAMESPACE,
+    opsProdNamespace: parsed.data.OPS_PROD_NAMESPACE,
     // 兼容旧配置：PIPELINE_TEMPLATE 为文件路径时注册为额外模板；否则视为默认模板名
     defaultTemplate: parsed.data.PIPELINE_TEMPLATE ? resolve(repoRoot, parsed.data.PIPELINE_TEMPLATE) : "default",
   };

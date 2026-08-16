@@ -37,7 +37,7 @@
 - **日志**：pino 结构化日志（console + `data/logs/pipeline.log`），支持 `GET /api/logs` 查询。
 - **开发模式**：`PIPELINE_MODE=simulation`（默认）产出方案文档；`real` 模式要求真实代码与真实部署。
 
-**文档**：[部署文档](docs/deployment.md) · [使用文档](docs/usage.md) · [架构设计](docs/architecture.md)
+**文档**：[部署文档](docs/deployment.md) · [使用文档](docs/usage.md) · [真实工程接入指南](docs/real-project-guide.md) · [架构设计](docs/architecture.md)
 
 ## 目录结构
 

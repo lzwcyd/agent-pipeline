@@ -54,7 +54,10 @@ interface MultiRunResult {
 }
 
 export class Orchestrator {
-  constructor(private readonly deps: OrchestratorDeps) {}
+  constructor(private readonly deps: OrchestratorDeps) {
+    // 让 headless agent 的沙箱覆盖整个工作区（真实工程模式需要读写 data/workspace/<project>）
+    process.env.PIPELINE_WORKSPACE_ROOT = deps.cfg.dataDir;
+  }
 
   private get log(): AppLogger | undefined {
     return this.deps.logger;
@@ -750,13 +753,21 @@ export class Orchestrator {
     if (def.agent === "ops") {
       const mode = this.deps.cfg.OPS_MODE === "auto" ? (this.hasKubectl() ? "kubectl" : "simulated") : this.deps.cfg.OPS_MODE;
       const env = def.ops?.env ?? "test";
+      const namespace = env === "prod" ? this.deps.cfg.opsProdNamespace : this.deps.cfg.opsTestNamespace;
       ctx.ops = {
         mode,
-        manifestsDir: this.deps.cfg.k8sManifestsDir,
+        manifestsDir: this.deps.cfg.opsManifestsDir,
         overlayDir: env === "prod" ? "overlays/prod" : "overlays/test",
         action: def.ops?.action ?? "deploy",
         env,
+        namespace,
+        image: ctx.image,
       };
+    }
+    // 真实工程模式：开发 Agent 注入目标工程目录
+    if (this.deps.cfg.PIPELINE_MODE === "real" && def.agent === "developer" && this.deps.cfg.devProjectDir) {
+      ctx.repoDir = join(this.deps.cfg.devWorkspaceDir, this.deps.cfg.devProjectDir);
+      ctx.workspaceDir = this.deps.cfg.devWorkspaceDir;
     }
     return buildStageContext(p, stage, ctx);
   }

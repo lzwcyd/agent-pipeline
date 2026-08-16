@@ -48,7 +48,11 @@ function modeNoteFor(role: string, agentDef: AgentDefinition, context: Record<st
         : "当前为「模拟流水线模式」：开发产出为方案/变更文档（artifactsDir 下）、测试为计划、部署为模拟执行（有部署计划与证据）。验收标准调整为：①需求覆盖度；②方案与测试计划完整性；③部署证据充分性。若上述齐备且无关键缺口，应判定 accepted=true；如有真实缺口可给 warn 但不要仅因『未真实开发/未真实部署』判失败。";
     case "developer":
       return real
-        ? "当前为「真实交付模式」：请在指定代码仓库完成真实实现并执行测试。"
+        ? `当前为「真实交付模式」：请在 context.repoDir 指定的工程仓库完成真实实现并执行测试：
+- 在仓库中创建/切换到功能分支（git checkout -b feature/<需求简写>）；
+- 实现代码、补充测试并运行（本地命令自测通过）；
+- 完成后 git add + commit（提交信息含需求标题），有远程仓库可 git push；
+- 产出与模拟模式一致：plan/changes/tests/version 等字段，changes 须与实际改动对应。`
         : `当前为「模拟开发模式」：不需要修改真实代码仓库，请在 artifactsDir 产出具体的开发计划、变更说明与测试计划文档，要求具体、可评审、字段齐全。${
             phase === "contract"
               ? "【多服务联调·契约轮】你是该服务的开发负责人。完整契约必须作为 JSON 对象输出到 stdout（含 basePath、endpoints、请求/响应结构、依赖的其他服务接口）；可以额外写文件辅助说明，但 stdout 的 JSON 才是契约本体，不要只在文件里。"
@@ -77,8 +81,10 @@ function modeNoteFor(role: string, agentDef: AgentDefinition, context: Record<st
   }
 }
 
-/** 环境 → namespace 映射 */
-export function namespaceForEnv(env: string): string {
+/** 环境 → namespace 映射（缺省 demo-test/demo-prod，可由 ops 上下文覆盖） */
+export function namespaceForEnv(env: string, extra?: Record<string, unknown>): string {
+  const ops = (extra?.ops ?? {}) as Record<string, unknown>;
+  if (typeof ops.namespace === "string") return ops.namespace;
   return env === "prod" ? "demo-prod" : "demo-test";
 }
 
@@ -115,7 +121,7 @@ export function buildStageContext(
     case "test_deploying":
       base["deployTarget"] = {
         environment: env,
-        namespace: namespaceForEnv(env),
+        namespace: namespaceForEnv(env, extra),
         version: pipeline.agents.dev_in_progress?.output?.version ?? "latest",
       };
       break;
@@ -134,7 +140,7 @@ export function buildStageContext(
     case "prod_deploying":
       base["deployTarget"] = {
         environment: env,
-        namespace: namespaceForEnv(env),
+        namespace: namespaceForEnv(env, extra),
         version: pipeline.agents.dev_in_progress?.output?.version ?? "latest",
       };
       base["testDeployInfo"] = pipeline.deploy?.test;
