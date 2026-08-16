@@ -276,7 +276,8 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
     for (;;) {
       const r = await fetch(`${h.baseUrl}/api/pipelines/${body.pipelineId}`);
       p = (await r.json()) as Record<string, unknown>;
-      if (p.status === "awaiting_acceptance" || ["done", "rejected", "failed"].includes(String(p.status))) break;
+      if (p.status === "awaiting_acceptance" && p.acceptancePending === true) break;
+      if (["done", "rejected", "failed"].includes(String(p.status))) break;
       if (Date.now() - start > 30000) throw new Error("等待验收超时");
       await new Promise((r2) => setTimeout(r2, 300));
     }
