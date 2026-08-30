@@ -85,6 +85,12 @@ table.list, #pipeline-table { width: 100%; border-collapse: collapse; font-size:
 .ex-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .ex-table th, .ex-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
 .ex-table th { color: var(--muted); font-weight: 500; }
+.usage-compact { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.usage-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 8px; margin-top: 8px; }
+.usage-metric { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; min-width: 0; }
+.usage-metric span { display: block; color: var(--muted); font-size: 11.5px; }
+.usage-metric strong { display: block; margin-top: 2px; font-size: 14px; overflow-wrap: anywhere; }
+.usage-metric.wide { grid-column: span 2; }
 pre.json { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; max-height: 260px; font-size: 12px; font-family: var(--mono); }
 .logbox { background: #0b0f18; border: 1px solid var(--border); border-radius: 6px; padding: 10px; height: 260px; overflow: auto; font-family: var(--mono); font-size: 12px; }
 .logbox .lvl-error { color: var(--err); }
@@ -95,3 +101,12 @@ button.danger { color: var(--err); border-color: var(--err); }
 button:disabled { opacity: .4; cursor: not-allowed; }
 #template-name { max-width: 320px; }
 #template-list { max-width: 320px; }
+
+@media (max-width: 800px) {
+  main { padding: 14px; }
+  .grid2, .detail-grid { grid-template-columns: 1fr; }
+  .detail-grid .full { grid-column: auto; }
+  .usage-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .usage-metric.wide { grid-column: span 2; }
+  #pipeline-table { display: block; overflow-x: auto; }
+}

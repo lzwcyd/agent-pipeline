@@ -49,6 +49,11 @@ export function createApp(deps: ServerDeps) {
       acceptanceFailurePolicy: deps.cfg.ACCEPTANCE_FAILURE_POLICY,
       maxRework: deps.cfg.MAX_REWORK,
       pipelineMode: deps.cfg.PIPELINE_MODE,
+      agentRuntime: deps.cfg.AGENT_RUNTIME,
+      agentCli: deps.cfg.AGENT_CLI,
+      agentModel: deps.cfg.AGENT_MODEL ?? null,
+      agentTimeoutMs: deps.cfg.AGENT_TIMEOUT_MS,
+      codexSandbox: deps.cfg.CODEX_SANDBOX,
       opsMode: deps.cfg.OPS_MODE,
       logLevel: deps.cfg.LOG_LEVEL,
       sources: {
@@ -339,6 +344,7 @@ function summarize(p: Pipeline) {
     failure: p.failure,
     acceptancePending: p.acceptancePending,
     reworkCount: p.reworkCount,
+    usage: p.usage,
   };
 }
 

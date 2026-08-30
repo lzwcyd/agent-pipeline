@@ -98,6 +98,13 @@ describe("HTTP API 集成测试（mock AgentRunner）", () => {
     const html = await res.text();
     expect(html).toContain("agent-pipeline 控制台");
     expect(html).toContain("tab-trigger");
+    expect(html).toContain("<th>用量</th>");
+
+    const jsRes = await fetch(`${h.baseUrl}/app.js`);
+    const js = await jsRes.text();
+    expect(js).toContain("用量汇总");
+    expect(js).toContain("缓存命中率");
+    expect(js).toContain("Provider 费用");
   });
 
   it("GET /api/config 返回脱敏配置", async () => {
@@ -108,11 +115,21 @@ describe("HTTP API 集成测试（mock AgentRunner）", () => {
       port: number;
       sources: Record<string, boolean>;
       pipelineMode: string;
+      agentRuntime: string;
+      agentCli: string;
+      agentModel: string | null;
+      agentTimeoutMs: number;
+      codexSandbox: string;
     };
     expect(cfg.template).toBe("default");
     expect(cfg.sources.mock).toBe(true);
     expect(cfg.sources.api).toBe(true);
     expect(cfg.pipelineMode).toBeTruthy();
+    expect(cfg.agentRuntime).toBe("opencode");
+    expect(cfg.agentCli).toBe(MOCK_AGENT);
+    expect(cfg.agentModel).toBe("mock-model");
+    expect(cfg.agentTimeoutMs).toBe(60000);
+    expect(cfg.codexSandbox).toBe("workspace-write");
   });
 
   it("POST /api/templates 动态注册新模板（立即生效），DELETE 删除，非法模板 400", async () => {
@@ -182,6 +199,7 @@ describe("HTTP API 集成测试（mock AgentRunner）", () => {
 
     const p = await waitPipeline(h.baseUrl, body.pipelineId);
     expect(p.status).toBe("done");
+    expect(p.usage).toMatchObject({ requestCount: 6, inputTokens: 600 });
     const sub = p.submission as { source: string; meta: { triggerType: string } };
     expect(sub.source).toBe("api");
     expect(sub.meta.triggerType).toBe("api");
@@ -205,7 +223,7 @@ describe("HTTP API 集成测试（mock AgentRunner）", () => {
       template: string;
       executions: unknown[];
       events: unknown[];
-      stats: { totalExecutions: number; stages: Record<string, unknown> };
+      stats: { totalExecutions: number; stages: Record<string, unknown>; usage: { requestCount: number } };
     };
     expect(hist.status).toBe("done");
     expect(hist.template).toBe("default");
@@ -213,6 +231,11 @@ describe("HTTP API 集成测试（mock AgentRunner）", () => {
     expect(hist.events.length).toBeGreaterThan(0);
     expect(hist.stats.totalExecutions).toBe(hist.executions.length);
     expect(hist.stats.stages.evaluating).toBeTruthy();
+    expect(hist.stats.usage.requestCount).toBe(6);
+
+    const listRes = await fetch(`${h.baseUrl}/api/pipelines`);
+    const list = (await listRes.json()) as { pipelines: Array<{ id: string; usage?: { requestCount: number } }> };
+    expect(list.pipelines.find((item) => item.id === body.pipelineId)?.usage?.requestCount).toBe(6);
 
     // events
     const evRes = await fetch(`${h.baseUrl}/api/pipelines/${body.pipelineId}/events`);
