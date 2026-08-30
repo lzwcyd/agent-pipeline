@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// 模拟 dsh headless agent：读取 task JSON（位置参数），按角色输出固定 JSON。
-// 用于端到端测试与无 LLM 的演示。调用方式与真实 dsh 一致：
-//   mock-dsh.mjs --profile headless '<task-json>'
+// 统一模拟 Agent：读取最后一个位置参数中的 task JSON，按角色输出固定结果。
+// 同时兼容 OpenCode（opencode run）与 Codex（codex exec --json）事件流，
+// 用于端到端测试与无 LLM 成本的演示。
 // 行为开关（环境变量）：
 //   MOCK_REJECT=1                评估阶段返回不通过
 //   MOCK_TEST_FAIL=1             测试阶段返回不通过（打回开发）
@@ -17,21 +17,19 @@ import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
-let taskArg = "";
-for (let i = 0; i < args.length; i += 1) {
-  if (args[i] === "--profile") {
-    i += 1;
-    continue;
-  }
-  taskArg = args[i] ?? "";
-  break;
+const runtime = args[0] === "run" ? "opencode" : args[0] === "exec" ? "codex" : undefined;
+const taskArg = args.at(-1) ?? "";
+
+if (!runtime) {
+  console.error("mock-agent: 仅支持 OpenCode run 或 Codex exec");
+  process.exit(1);
 }
 
 let task;
 try {
   task = JSON.parse(taskArg);
 } catch {
-  console.error("mock-dsh: 无法解析 task JSON");
+  console.error("mock-agent: 无法解析 task JSON");
   process.exit(1);
 }
 
@@ -251,4 +249,35 @@ switch (role) {
     };
 }
 
-console.log(JSON.stringify(output));
+const text = JSON.stringify(output);
+const pipelineId = typeof task.pipelineId === "string" ? task.pipelineId : "unknown";
+
+if (runtime === "codex") {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: `mock-codex-${pipelineId}` }));
+  console.log(JSON.stringify({
+    type: "item.completed",
+    item: { id: `mock-message-${pipelineId}`, type: "agent_message", text },
+  }));
+  console.log(JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 400,
+      cached_input_tokens: 300,
+      output_tokens: 40,
+      reasoning_output_tokens: 10,
+      cache_write_input_tokens: 20,
+    },
+  }));
+} else {
+  const sessionID = `mock-opencode-${pipelineId}`;
+  console.log(JSON.stringify({ type: "text", sessionID, part: { type: "text", text } }));
+  console.log(JSON.stringify({
+    type: "step_finish",
+    sessionID,
+    part: {
+      type: "step-finish",
+      tokens: { input: 100, output: 30, reasoning: 10, cache: { read: 300, write: 20 } },
+      cost: 0.001,
+    },
+  }));
+}

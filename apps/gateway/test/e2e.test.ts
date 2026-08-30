@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { DshRunner } from "../src/agents/dsh-runner.js";
+import { createAgentRunner } from "../src/agents/provider.js";
 import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
 import { CompositeNotifier } from "../src/notify/notifier.js";
@@ -13,7 +13,7 @@ import type { EnvConfig } from "../src/config.js";
 import type { PipelineTemplate } from "../src/pipeline/template.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
-const MOCK_DSH = join(REPO_ROOT, "scripts", "mock-dsh.mjs");
+const MOCK_AGENT = join(REPO_ROOT, "scripts", "mock-agent.mjs");
 
 interface Harness {
   cfg: EnvConfig;
@@ -26,8 +26,10 @@ function makeHarness(env: Record<string, string> = {}, template: PipelineTemplat
   const dir = dataDir ?? mkdtempSync(join(tmpdir(), "pipeline-e2e-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
-    DSH_CLI: MOCK_DSH,
-    DSH_AGENT_TIMEOUT_MS: "60000",
+    AGENT_RUNTIME: "opencode",
+    AGENT_CLI: MOCK_AGENT,
+    AGENT_MODEL: "mock-model",
+    AGENT_TIMEOUT_MS: "60000",
     AUTO_ACCEPT: "true",
     MAX_REWORK: "3",
     PIPELINE_DATA_DIR: dir,
@@ -37,7 +39,7 @@ function makeHarness(env: Record<string, string> = {}, template: PipelineTemplat
   const cfg = loadConfig();
   const store = new PipelineStore(cfg.pipelinesDir);
   const notifier = new CompositeNotifier(cfg);
-  const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS });
+  const runner = createAgentRunner(cfg);
   const registry = template instanceof TemplateRegistry ? template : new TemplateRegistry({ initial: [template] });
   const defaultTemplate =
     template instanceof TemplateRegistry
@@ -68,7 +70,7 @@ const sampleSubmission = {
   raw: {},
 };
 
-describe("端到端：完整流水线（mock DSH runner）", () => {
+describe("端到端：完整流水线（mock AgentRunner）", () => {
   let h: Harness;
 
   beforeEach(() => {
@@ -101,6 +103,16 @@ describe("端到端：完整流水线（mock DSH runner）", () => {
     expect(p.executions.every((e) => e.status === "ok")).toBe(true);
     const stages = p.executions.map((e) => e.stage);
     expect(stages).toEqual(["evaluating", "dev_in_progress", "testing", "test_deploying", "awaiting_acceptance", "prod_deploying"]);
+  });
+
+  it("Codex JSONL 运行时可完成整条流水线", async () => {
+    h.cleanup();
+    h = makeHarness({ AGENT_RUNTIME: "codex", CODEX_SANDBOX: "workspace-write" });
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(h.cfg.AGENT_RUNTIME).toBe("codex");
+    expect(p.status).toBe("done");
+    expect(p.executions).toHaveLength(6);
+    expect(p.agents.testing?.output?.status).toBe("pass");
   });
 
   it("历史查询：buildHistory 提供状态/执行/事件/统计", async () => {

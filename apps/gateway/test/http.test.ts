@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
 import { loadConfig } from "../src/config.js";
-import { DshRunner } from "../src/agents/dsh-runner.js";
+import { createAgentRunner } from "../src/agents/provider.js";
 import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
 import { CompositeNotifier } from "../src/notify/notifier.js";
@@ -15,7 +15,7 @@ import { DEFAULT_TEMPLATE, TemplateRegistry } from "../src/pipeline/template.js"
 import { AgentRegistry } from "../src/agents/registry.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
-const MOCK_DSH = join(REPO_ROOT, "scripts", "mock-dsh.mjs");
+const MOCK_AGENT = join(REPO_ROOT, "scripts", "mock-agent.mjs");
 
 interface HttpHarness {
   baseUrl: string;
@@ -27,8 +27,10 @@ async function makeHttpHarness(env: Record<string, string> = {}): Promise<HttpHa
   const dir = mkdtempSync(join(tmpdir(), "pipeline-http-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
-    DSH_CLI: MOCK_DSH,
-    DSH_AGENT_TIMEOUT_MS: "60000",
+    AGENT_RUNTIME: "opencode",
+    AGENT_CLI: MOCK_AGENT,
+    AGENT_MODEL: "mock-model",
+    AGENT_TIMEOUT_MS: "60000",
     AUTO_ACCEPT: "true",
     MAX_REWORK: "3",
     PIPELINE_DATA_DIR: dir,
@@ -39,7 +41,7 @@ async function makeHttpHarness(env: Record<string, string> = {}): Promise<HttpHa
   const logger = createLogger({ level: "info", logsDir: cfg.logsDir });
   const store = new PipelineStore(cfg.pipelinesDir);
   const notifier = new CompositeNotifier(cfg);
-  const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
+  const runner = createAgentRunner(cfg, logger);
   const sources = createFormSources(cfg);
   const agentRegistry = new AgentRegistry();
   const registry = new TemplateRegistry({ dir: cfg.templatesDir, initial: [DEFAULT_TEMPLATE], validAgents: agentRegistry.names() });
@@ -73,7 +75,7 @@ async function waitPipeline(baseUrl: string, id: string, timeoutMs = 30000): Pro
   }
 }
 
-describe("HTTP API 集成测试（mock DSH runner）", () => {
+describe("HTTP API 集成测试（mock AgentRunner）", () => {
   let h: HttpHarness;
   beforeEach(async () => {
     h = await makeHttpHarness();
