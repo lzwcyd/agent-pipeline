@@ -2,7 +2,7 @@ import { Command } from "commander";
 import type { EnvConfig } from "../config.js";
 import type { Orchestrator } from "../pipeline/orchestrator.js";
 import type { PipelineStore } from "../pipeline/store.js";
-import type { DshRunner } from "../agents/dsh-runner.js";
+import type { AgentRunner } from "../agents/runner.js";
 import type { FormSource } from "../forms/index.js";
 import type { Notifier } from "../notify/notifier.js";
 import { startServer } from "../http/server.js";
@@ -15,7 +15,7 @@ export interface CliDeps {
   cfg: EnvConfig;
   store: PipelineStore;
   orchestrator: Orchestrator;
-  runner: DshRunner;
+  runner: AgentRunner;
   sources: Record<"mock" | "feishu" | "dingtalk" | "api", FormSource>;
   notifier: Notifier;
   logger: AppLogger;
@@ -67,7 +67,7 @@ export function buildCli(deps: CliDeps): Command {
       const pipeline = deps.orchestrator.startSubmission(submission);
       // eslint-disable-next-line no-console
       console.log(`流水线 ${pipeline.id} 已启动，等待执行完成……`);
-      const finished = await deps.orchestrator.awaitPipeline(pipeline.id, deps.cfg.DSH_AGENT_TIMEOUT_MS * 6);
+      const finished = await deps.orchestrator.awaitPipeline(pipeline.id, deps.cfg.AGENT_TIMEOUT_MS * 6);
       // eslint-disable-next-line no-console
       console.log(`流水线 ${pipeline.id} 终态：${finished.status}`);
       await deps.notifier.close();

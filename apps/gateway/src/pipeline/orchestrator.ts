@@ -2,7 +2,7 @@ import { readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, relative } from "node:path";
 import type { EnvConfig } from "../config.js";
-import { DshRunner } from "../agents/dsh-runner.js";
+import type { AgentRunner } from "../agents/runner.js";
 import { buildAgentTask, buildStageContext, namespaceForEnv } from "../agents/roles.js";
 import type { Notifier } from "../notify/notifier.js";
 import { SOURCE_LABEL } from "../forms/index.js";
@@ -35,7 +35,7 @@ function walkFiles(dir: string): string[] {
 export interface OrchestratorDeps {
   cfg: EnvConfig;
   store: PipelineStore;
-  runner: DshRunner;
+  runner: AgentRunner;
   notifier: Notifier;
   /** 模板注册表（平台多模板，流水线各自绑定互不干扰） */
   registry: TemplateRegistry;
@@ -174,7 +174,7 @@ export class Orchestrator {
   /** 同步跑完整条流水线（测试/CLI 用）：等所有阶段结束 */
   async handleSubmission(sub: FormSubmission): Promise<Pipeline> {
     const pipeline = this.startSubmission(sub);
-    return this.awaitPipeline(pipeline.id, this.deps.cfg.DSH_AGENT_TIMEOUT_MS * 6);
+    return this.awaitPipeline(pipeline.id, this.deps.cfg.AGENT_TIMEOUT_MS * 6);
   }
 
   /** 轮询等待流水线稳定（终态，或停在待人工验收确认） */

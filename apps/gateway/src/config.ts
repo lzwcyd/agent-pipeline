@@ -16,6 +16,12 @@ export function resolveRepoRoot(from = process.cwd()): string {
 const envSchema = z.object({
   PORT: z.coerce.number().default(3081),
   PIPELINE_DATA_DIR: z.string().default("data"),
+  AGENT_RUNTIME: z.enum(["opencode", "codex"]).default("opencode"),
+  AGENT_CLI: z.string().optional(),
+  AGENT_MODEL: z.string().optional(),
+  AGENT_TIMEOUT_MS: z.coerce.number().positive().default(600_000),
+  CODEX_SANDBOX: z.enum(["read-only", "workspace-write", "danger-full-access"]).default("workspace-write"),
+  // Transitional fields are removed together with the legacy test harness.
   DSH_CLI: z.string().default("dsh"),
   DSH_AGENT_TIMEOUT_MS: z.coerce.number().default(600_000),
   AUTO_ACCEPT: z
@@ -92,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   }
   return {
     ...parsed.data,
+    AGENT_CLI: parsed.data.AGENT_CLI || parsed.data.AGENT_RUNTIME,
     repoRoot,
     dataDir,
     projectRoot,
