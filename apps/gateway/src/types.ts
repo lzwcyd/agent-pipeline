@@ -162,7 +162,7 @@ export interface PipelineExecution {
   usage?: AgentUsage;
 }
 
-/** Agent 任务的统一入参（会整体作为 headless 任务的 task 文本） */
+/** Agent 任务的统一入参（会整体作为 Provider CLI 的 task 文本） */
 export interface AgentTask {
   pipelineId: string;
   /** Agent 角色名（AgentRegistry 管理，内置 + 自定义） */

@@ -2,43 +2,84 @@
 
 ## 运行测试
 
+在仓库根执行：
+
 ```bash
-cd apps/gateway
-corepack pnpm typecheck   # TypeScript 严格检查
-corepack pnpm test        # 全部测试（vitest）
+corepack pnpm test
+corepack pnpm typecheck
+corepack pnpm build
 ```
 
-## 测试分层（共 51 个用例）
+只运行网关或单个文件：
 
-| 层级 | 文件 | 用例数 | 覆盖 |
-| --- | --- | --- | --- |
-| 单元·状态机 | `test/state-machine.test.ts` | 4 | 完整链路迁移、打回/回滚迁移、非法迁移拦截、终态隔离 |
-| 单元·验签 | `test/signature.test.ts` | 8 | 飞书加密模式（验签+解密）、签名篡改拒绝、URL 验证、钉钉 HMAC 验签 |
-| 单元·映射/解析 | `test/payload.test.ts` | 12 | 三源归一化、API 触发解析、`_policy` 提取、agent 输出 JSON 抽取（围栏/混合文本） |
-| 集成·HTTP API | `test/http.test.ts` | 7 | 标准接口触发、模拟表单触发、history/events/templates/logs 查询、飞书 challenge、非法负载 400、accept 接口、错误状态防护 |
-| 集成·端到端 | `test/e2e.test.ts` | 20 | 全链路成功、评估拒绝、测试打回/超限、验收三策略（rollback/rework/reject）、触发级 policy 覆盖、回滚/回滚失败、产品拒绝、历史执行、**流程模板定制**（插评审节点/删测试节点/非法模板）、**多开发 Agent 契约联调**、坏输出自动重试、人工验收闸门、retry |
+```bash
+corepack pnpm --filter @pipeline/gateway test
+corepack pnpm --filter @pipeline/gateway exec vitest run test/runner.test.ts
+```
 
-## 测试设计要点
+## 测试分层
 
-- **Agent 运行时全部 mock**：`scripts/mock-dsh.mjs` 模拟 DSH headless，通过环境变量注入故障（`MOCK_REJECT`/`MOCK_TEST_FAIL`/`MOCK_ACCEPT_REJECT`/`MOCK_OPS_FAIL`/`MOCK_ROLLBACK_FAIL`/`MOCK_REVIEW_REJECT_ONCE`/`MOCK_BAD_JSON_FIRST` 等），`*_ONCE` 类开关按流水线计数模拟"修复后通过"。
-- **真实执行隔离**：每个测试用临时数据目录（`PIPELINE_DATA_DIR`），不污染仓库 `data/`。
-- **HTTP 层真监听**：`http.test.ts` 用 `app.listen(0)` 随机端口 + `fetch` 走真实请求路径（含异步 202 驱动）。
+| 层级 | 文件 | 覆盖 |
+| --- | --- | --- |
+| 状态机 | `state-machine.test.ts` | 合法迁移、回滚/打回、非法迁移、终态隔离 |
+| 触发与安全 | `payload.test.ts` / `signature.test.ts` | 多来源归一化、策略、JSON 抽取、飞书/钉钉验签 |
+| 用量与持久化 | `usage.test.ts` / `store.test.ts` | Token/费用/请求聚合、命中率、去重、旧快照兼容 |
+| Provider | `runner.test.ts` | OpenCode/Codex JSONL、参数、Codex Token 归一化、超时、工厂 |
+| 统一测试执行器 | `mock-agent.test.ts` | 同一脚本输出 OpenCode 与 Codex 协议 |
+| HTTP/Web | `http.test.ts` | API、异步驱动、历史/用量、运行时配置、Web 用量标记 |
+| 端到端 | `e2e.test.ts` | 全链路、策略、模板、恢复、多 Agent、自动/人工重试及用量 |
+
+## 统一 mock Agent
+
+`scripts/mock-agent.mjs` 不调用模型。它根据第一个命令识别协议：
+
+- OpenCode：接收 `run ... <AgentTask JSON>`，输出 `text` 和 `step_finish` JSONL；
+- Codex：接收 `exec --json ... <AgentTask JSON>`，输出 `thread.started`、`item.completed` 和 `turn.completed` JSONL。
+
+业务输出与故障开关对两种协议一致。常用开关：
+
+- `MOCK_REJECT`、`MOCK_TEST_FAIL`、`MOCK_ACCEPT_REJECT`；
+- `MOCK_OPS_FAIL`、`MOCK_ROLLBACK_FAIL`；
+- `MOCK_REVIEW_REJECT_ONCE`、`MOCK_BAD_JSON_FIRST`；
+- 所有 `*_ONCE` 开关用 artifacts 目录中的状态文件模拟“第一次失败，后续通过”。
+
+端到端 harness 默认设置 `AGENT_RUNTIME=opencode` 和 `AGENT_CLI=scripts/mock-agent.mjs`，并额外以 `codex` 跑完整成功链路。
+
+## 用量测试原则
+
+- OpenCode 每个 `step_finish`、Codex 每个 `turn.completed` 都是一次真实请求。
+- 输入 Token 不含缓存读取，输出 Token 不含推理。
+- 多 Agent 测试断言契约轮、实现轮和每个坏输出重试都被累计。
+- 失败后 retry 测试先检查失败快照，再确认最终汇总保留前后请求。
+- 流水线用量必须等于 `executions[].usage` 的合并结果。
+- Provider 未返回费用时必须保持 `null`，不能在测试或生产代码中估算。
 
 ## 真实冒烟（可选）
 
-mock 全绿后，可对运行中的网关发起真实 DSH agent 流水线：
+先让全部 mock 测试通过，再选择一个已认证的 CLI：
 
 ```bash
-curl -X POST http://127.0.0.1:3081/api/pipelines -H 'Content-Type: application/json' \
-  -d '{"title": "冒烟需求", "description": "描述", "submitter": "测试"}'
-# 轮询：
+# OpenCode
+AGENT_RUNTIME=opencode AGENT_CLI=opencode corepack pnpm gateway serve
+
+# 或 Codex
+AGENT_RUNTIME=codex AGENT_CLI=codex CODEX_SANDBOX=workspace-write corepack pnpm gateway serve
+```
+
+另一个终端提交并轮询：
+
+```bash
+curl -X POST http://127.0.0.1:3081/api/pipelines \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"冒烟需求","description":"描述","submitter":"测试"}'
 curl http://127.0.0.1:3081/api/pipelines/<id>/history
 ```
 
-真实冒烟依赖模型质量与网络，耗时为 mock 的数十倍（每个 agent 调用 1~8 分钟），可能因 LLM 输出不可解析/超时而失败——这正是 `retry`、子任务自动重试、`MAX_REWORK` 存在的意义。
+真实冒烟依赖网络、模型与 CLI 认证。失败时检查 `AgentResult.rawOutput`、`error`、结构化日志和已保留的部分用量。
 
 ## 新增测试指引
 
-1. 新阶段/角色：mock-dsh.mjs 增加对应输出 → e2e 用自定义模板断言阶段顺序与产物。
-2. 新 API：在 `http.test.ts` 增加端点用例（走真实 HTTP）。
-3. 新故障注入：mock-dsh.mjs 增加 `MOCK_*` 开关 + e2e 断言编排行为。
+1. 新角色：扩展 `mock-agent.mjs` 的业务输出，并用模板端到端断言。
+2. 新 Provider 事件字段：先给纯解析函数添加 JSONL fixture，再修改解析。
+3. 新故障：增加 `MOCK_*` 开关，并断言业务状态和请求用量。
+4. 新 API/Web 字段：在 `http.test.ts` 通过真实监听端口验证。

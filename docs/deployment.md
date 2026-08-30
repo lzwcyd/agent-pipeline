@@ -8,12 +8,12 @@
 | --- | --- | --- |
 | Node.js | ≥ 22 | 网关运行环境 |
 | corepack | ≥ 0.34 | 提供 pnpm |
-| dsh（DeepSeek Harness CLI） | 与 Web GUI 同版本 | Agent 运行时（`dsh --profile headless`） |
-| 模型凭证 | — | `~/.dsh/.credentials.yaml` 的 `DEEPSEEK_API_KEY`，或环境变量 |
+| OpenCode 或 Codex CLI | 当前可用版本 | Agent 运行时；至少安装并认证一个 |
+| 模型凭证 | — | 由所选 CLI 的标准认证方式管理 |
 | kubectl（可选） | 任意 | 存在时运维 Agent 走真实部署；否则自动模拟 |
 | Kubernetes 集群（可选） | 任意 | `OPS_MODE=kubectl` 时使用 |
 
-> 网关本体是一个 Node.js 服务；Agent 执行依赖宿主机上的 dsh，因此**不建议**把网关放进无 dsh 的隔离容器（见 §6 容器化说明）。
+> 网关通过子进程调用所选 Agent CLI。服务账户必须能执行该 CLI、访问其认证配置，并对配置的工作区拥有与沙箱策略匹配的权限。
 
 ## 2. 安装
 
@@ -22,12 +22,11 @@
 cd agent-pipeline
 corepack pnpm install
 
-# 2) 安装 DSH headless profile（一次性，所有用户/机器都需要）
-bash scripts/install-headless-profile.sh
-# 验证：
-dsh --profile headless "Reply with exactly: PONG"   # 应输出 PONG
+# 2) 按 OpenCode 或 Codex 官方方式安装 CLI 并完成认证
+opencode --version   # AGENT_RUNTIME=opencode
+codex --version      # AGENT_RUNTIME=codex
 
-# 3) 配置
+# 3) 配置（只需启用其中一个运行时）
 cp .env.example .env
 ```
 
@@ -39,8 +38,11 @@ cp .env.example .env
 | --- | --- | --- |
 | `PORT` | 3081 | 监听端口 |
 | `PIPELINE_DATA_DIR` | data | 流水线数据（pipelines/artifacts/logs）目录，相对仓库根 |
-| `DSH_CLI` | dsh | dsh 可执行文件路径（不在 PATH 时填绝对路径） |
-| `DSH_AGENT_TIMEOUT_MS` | 900000 | 单个 agent 调用超时 |
+| `AGENT_RUNTIME` | opencode | `opencode` / `codex` |
+| `AGENT_CLI` | 与运行时同名 | CLI 路径；不在 PATH 时填绝对路径 |
+| `AGENT_MODEL` | 运行时默认 | 可选模型参数 |
+| `AGENT_TIMEOUT_MS` | 600000 | 单次 CLI 调用超时（毫秒） |
+| `CODEX_SANDBOX` | workspace-write | Codex：read-only/workspace-write/danger-full-access |
 | `AUTO_ACCEPT` | true | 验收预检通过后是否自动放行 |
 | `ACCEPTANCE_FAILURE_POLICY` | rollback | 验收失败策略：rollback/rework/reject |
 | `MAX_REWORK` | 3 | 打回开发上限 |
@@ -120,13 +122,12 @@ server {
 
 ## 6. 容器化（可选）
 
-网关需要调用宿主机 dsh，容器方案：挂载 DSH 家目录 + 在镜像内安装 dsh。
+镜像必须包含所选 Agent CLI。认证配置与工作区应按最小权限挂载；不要把长期凭证写进镜像层。
 
 ```dockerfile
 FROM node:22-slim
 RUN npm i -g corepack && corepack enable
-# 安装 dsh（与宿主机同版本）：
-RUN npm i -g @deepseek-ai/dsh
+# 在此按所选运行时的官方方式安装并锁定 OpenCode 或 Codex CLI 版本。
 WORKDIR /app
 COPY . .
 RUN corepack pnpm install --frozen-lockfile
@@ -139,16 +140,18 @@ docker build -t pipeline-gateway .
 docker run -d --name agent-pipeline-gateway \
   -p 3081:3081 \
   -v /opt/agent-pipeline/.env:/app/.env:ro \
-  -v ~/.dsh:/root/.dsh:ro \
+  -v /opt/agent-auth:/root/.agent-auth:ro \
+  -v /opt/workspaces:/workspaces \
   -v pipeline-data:/app/data \
   pipeline-gateway
 ```
-> 容器内 dsh 版本须与宿主机 profile 兼容；headless profile 由 `install-headless-profile.sh` 安装到挂载的 `~/.dsh`。
+
+认证目录的实际容器路径取决于所选 CLI。`AGENT_CLI` 必须指向容器内可执行文件。Codex 生产环境建议从 `workspace-write` 起步；只有明确需要且容器边界足够强时才使用 `danger-full-access`。
 
 ## 7. 数据与日志
 
 - 数据目录 `data/`：
-  - `pipelines/<id>.json`：流水线快照（状态、事件、执行历史、产物清单）
+  - `pipelines/<id>.json`：流水线快照（状态、事件、执行历史、Agent/阶段/流水线用量、产物清单）
   - `artifacts/<id>/<stage>/`：各阶段 agent 工作目录与产物
   - `logs/pipeline.log`：结构化日志（pino JSON 行）
 - 备份：定期归档 `data/pipelines/` 与 `data/artifacts/` 即可；日志可按需轮转（外部 logrotate）。
@@ -164,7 +167,7 @@ docker run -d --name agent-pipeline-gateway \
 ```bash
 git pull
 corepack pnpm install --frozen-lockfile
-# 若 DSH 升级：重新执行 scripts/install-headless-profile.sh --force
+opencode --version  # 或 codex --version，确认部署主机上的 CLI 仍可用
 corepack pnpm gateway serve   # 重启
 ```
 数据目录向下兼容（JSON 快照结构只增字段，不破坏旧文件）。

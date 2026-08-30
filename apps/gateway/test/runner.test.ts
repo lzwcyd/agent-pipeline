@@ -149,4 +149,22 @@ describe("provider process and factory", () => {
     expect(cfg.CODEX_SANDBOX).toBe("workspace-write");
     expect(createAgentRunner(cfg).runtime).toBe("codex");
   });
+
+  it("applies CLI, model, timeout and sandbox overrides", () => {
+    const cfg = loadConfig({
+      AGENT_RUNTIME: "codex",
+      AGENT_CLI: "/opt/bin/codex-custom",
+      AGENT_MODEL: "gpt-custom",
+      AGENT_TIMEOUT_MS: "12345",
+      CODEX_SANDBOX: "read-only",
+    });
+
+    expect(cfg).toMatchObject({
+      AGENT_RUNTIME: "codex",
+      AGENT_CLI: "/opt/bin/codex-custom",
+      AGENT_MODEL: "gpt-custom",
+      AGENT_TIMEOUT_MS: 12345,
+      CODEX_SANDBOX: "read-only",
+    });
+  });
 });

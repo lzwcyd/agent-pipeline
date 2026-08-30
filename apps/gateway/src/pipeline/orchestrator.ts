@@ -57,7 +57,7 @@ interface MultiRunResult {
 
 export class Orchestrator {
   constructor(private readonly deps: OrchestratorDeps) {
-    // headless agent 沙箱根：有目标工程用工程根（任意路径），否则 data 根
+    // Agent 工作区根：有目标工程用工程根（任意路径），否则 data 根
     process.env.PIPELINE_WORKSPACE_ROOT = deps.cfg.workspaceRoot;
   }
 
