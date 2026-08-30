@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EMPTY_USAGE } from "../agents/usage.js";
+import { EMPTY_USAGE, mergeUsage } from "../agents/usage.js";
 import type { Pipeline } from "../types.js";
 
 /**
@@ -36,14 +36,14 @@ export class PipelineStore {
   save(pipeline: Pipeline): void {
     const file = this.path(pipeline.id);
     const tmp = `${file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(pipeline, null, 2), "utf8");
+    writeFileSync(tmp, JSON.stringify(this.normalize(pipeline), null, 2), "utf8");
     renameSync(tmp, file);
   }
 
   get(id: string): Pipeline | undefined {
     try {
       const raw = readFileSync(this.path(id), "utf8");
-      return JSON.parse(raw) as Pipeline;
+      return this.normalize(JSON.parse(raw) as Pipeline);
     } catch {
       return undefined;
     }
@@ -54,7 +54,7 @@ export class PipelineStore {
     const pipelines = files
       .map((f) => {
         try {
-          return JSON.parse(readFileSync(join(this.dir, f), "utf8")) as Pipeline;
+          return this.normalize(JSON.parse(readFileSync(join(this.dir, f), "utf8")) as Pipeline);
         } catch {
           return undefined;
         }
@@ -65,5 +65,15 @@ export class PipelineStore {
 
   private path(id: string): string {
     return join(this.dir, `${id}.json`);
+  }
+
+  /** 兼容旧快照，并确保流水线汇总只由执行历史计算。 */
+  private normalize(pipeline: Pipeline): Pipeline {
+    const executions = pipeline.executions ?? [];
+    return {
+      ...pipeline,
+      executions,
+      usage: mergeUsage(...executions.map((execution) => execution.usage)),
+    };
   }
 }

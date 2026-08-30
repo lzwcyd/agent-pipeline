@@ -1,4 +1,5 @@
 import type { Pipeline } from "../types.js";
+import { mergeUsage } from "../agents/usage.js";
 
 /**
  * 流水线历史/状态视图。
@@ -7,6 +8,7 @@ import type { Pipeline } from "../types.js";
  * - 统计：各阶段执行次数/失败次数/最近结果/累计耗时
  */
 export function buildHistory(p: Pipeline) {
+  const usage = mergeUsage(...p.executions.map((execution) => execution.usage));
   const stageStats: Record<string, { runs: number; failures: number; lastResult: string; totalDurationMs: number }> = {};
   for (const ex of p.executions) {
     const s = (stageStats[ex.stage] ??= { runs: 0, failures: 0, lastResult: "", totalDurationMs: 0 });
@@ -47,6 +49,7 @@ export function buildHistory(p: Pipeline) {
       totalExecutions: p.executions.length,
       reworkCount: p.reworkCount ?? 0,
       stages: stageStats,
+      usage,
     },
   };
 }

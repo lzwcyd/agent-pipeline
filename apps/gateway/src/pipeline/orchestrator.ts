@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { join, relative } from "node:path";
 import type { EnvConfig } from "../config.js";
 import type { AgentRunner } from "../agents/runner.js";
+import { EMPTY_USAGE, mergeUsage, type AgentUsage } from "../agents/usage.js";
 import { buildAgentTask, buildStageContext, namespaceForEnv } from "../agents/roles.js";
 import type { Notifier } from "../notify/notifier.js";
 import { SOURCE_LABEL } from "../forms/index.js";
@@ -51,6 +52,7 @@ interface MultiRunResult {
   ok: boolean;
   agentResult?: AgentResult;
   error?: string;
+  usage: AgentUsage;
 }
 
 export class Orchestrator {
@@ -156,6 +158,15 @@ export class Orchestrator {
       finishedAt,
       durationMs: Math.max(0, new Date(finishedAt).getTime() - new Date(startedAt).getTime()),
       ...extra,
+    };
+  }
+
+  /** 流水线汇总始终由执行历史派生，避免重试或并行分支漏算/重复计算。 */
+  private withExecutions(p: Pipeline, executions: PipelineExecution[]): Pipeline {
+    return {
+      ...p,
+      executions,
+      usage: mergeUsage(...executions.map((execution) => execution.usage)),
     };
   }
 
@@ -337,7 +348,14 @@ export class Orchestrator {
     if (def.multi) {
       const multi = await this.runMultiStage(current, def, artifactsDir, startedAt);
       if (!multi.ok || !multi.agentResult) {
-        return this.fail(current, stage, multi.error ?? "多 Agent 阶段执行失败");
+        return this.fail(current, stage, multi.error ?? "多 Agent 阶段执行失败", {
+          stage,
+          status: "error",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          error: multi.error,
+          usage: multi.usage,
+        });
       }
       agentResult = multi.agentResult;
     } else {
@@ -346,9 +364,18 @@ export class Orchestrator {
       const task = buildAgentTask(current, stage, def.agent, agentDef, context, artifactsDir);
       try {
         const run = await this.deps.runner.run(task, artifactsDir);
-        if (run.exitCode !== 0 || !run.parsed) {
+        if (run.status !== "ok" || run.exitCode !== 0 || !run.parsed) {
           const detail = (run.stderr || run.stdout).slice(-800);
-          throw new Error(`agent 退出码 ${run.exitCode} 或输出不可解析：${detail}`);
+          const message = run.error ?? `agent 退出码 ${run.exitCode} 或输出不可解析：${detail}`;
+          return this.fail(current, stage, message, {
+            stage,
+            status: "error",
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            rawOutput: run.stdout.slice(-4000),
+            error: message,
+            usage: run.usage,
+          });
         }
         agentResult = {
           stage,
@@ -357,19 +384,23 @@ export class Orchestrator {
           finishedAt: new Date().toISOString(),
           output: run.parsed,
           rawOutput: run.stdout.slice(-4000),
+          usage: run.usage,
         };
       } catch (err) {
         return this.fail(current, stage, err instanceof Error ? err.message : String(err));
       }
     }
 
-    current = {
+    const executions = [
+      ...current.executions,
+      this.execution(current, stage, "ok", startedAt, agentResult.finishedAt, {
+        output: agentResult.output,
+        usage: agentResult.usage,
+      }),
+    ];
+    current = this.withExecutions({
       ...current,
       agents: { ...current.agents, [stage]: agentResult },
-      executions: [
-        ...current.executions,
-        this.execution(current, stage, "ok", startedAt, new Date().toISOString(), { output: agentResult.output }),
-      ],
       artifacts: [
         ...current.artifacts,
         ...walkFiles(artifactsDir).map((f) => ({
@@ -378,7 +409,7 @@ export class Orchestrator {
         })),
       ],
       updatedAt: new Date().toISOString(),
-    };
+    }, executions);
     this.log?.info({ pipelineId: current.id, stage }, "stage completed");
 
     return this.dispatch(current, stage, agentResult);
@@ -459,26 +490,42 @@ export class Orchestrator {
     const runSubTask = async (
       svc: string,
       ctx: Record<string, unknown>,
-    ): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string }> => {
+    ): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string; usage: AgentUsage }> => {
       const dir = join(artifactsDir, svc);
       const agentDef = this.deps.agentRegistry.get(def.agent);
       const task = buildAgentTask(p, def.id, def.agent, agentDef, ctx, dir);
       try {
         const run = await this.deps.runner.run(task, dir);
-        if (run.exitCode === 0 && run.parsed) return { ok: true, output: run.parsed };
+        const phase = ctx.phase;
+        const validOutput = run.parsed && (
+          phase !== "contract" ||
+          (run.parsed.service === svc && run.parsed.contract !== null && typeof run.parsed.contract === "object")
+        );
+        if (run.status === "ok" && run.exitCode === 0 && validOutput) {
+          return { ok: true, output: run.parsed!, usage: run.usage };
+        }
         // 输出不可解析或异常退出：带提示重试一次（真实 agent 偶尔把 JSON 写进文件/围栏外）
-        const reason = run.exitCode !== 0 ? `退出码 ${run.exitCode}` : "输出无法解析为 JSON";
+        const reason = run.exitCode !== 0
+          ? `退出码 ${run.exitCode}`
+          : run.parsed ? "输出不符合阶段契约" : "输出无法解析为 JSON";
         const retryTask = {
           ...task,
           instructions: `${task.instructions}\n\n注意：上一次输出未通过校验（${reason}）。请把结果作为【唯一的 JSON 对象】输出到 stdout，不要围栏、不要解释、不要只写文件。`,
         };
         this.log?.warn({ pipelineId: p.id, stage: def.id, svc, reason }, "multi-agent sub-task retry");
         const retry = await this.deps.runner.run(retryTask, dir);
-        if (retry.exitCode === 0 && retry.parsed) return { ok: true, output: retry.parsed };
+        const retryValidOutput = retry.parsed && (
+          phase !== "contract" ||
+          (retry.parsed.service === svc && retry.parsed.contract !== null && typeof retry.parsed.contract === "object")
+        );
+        const usage = mergeUsage(run.usage, retry.usage);
+        if (retry.status === "ok" && retry.exitCode === 0 && retryValidOutput) {
+          return { ok: true, output: retry.parsed!, usage };
+        }
         const tail = (retry.stdout || retry.stderr).slice(-400) || (run.stdout || run.stderr).slice(-400);
-        return { ok: false, error: `输出不可解析（${reason}）：${tail}` };
+        return { ok: false, error: `输出不可解析（${reason}）：${tail}`, usage };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return { ok: false, error: err instanceof Error ? err.message : String(err), usage: structuredClone(EMPTY_USAGE) };
       }
     };
 
@@ -488,9 +535,10 @@ export class Orchestrator {
         return { svc, ...r };
       }),
     );
+    const contractUsage = mergeUsage(...contractRound.map((result) => result.usage));
     const contractFailed = contractRound.find((r) => !r.ok);
     if (contractFailed) {
-      return { ok: false, error: `服务 ${contractFailed.svc} 契约声明失败：${contractFailed.error}` };
+      return { ok: false, error: `服务 ${contractFailed.svc} 契约声明失败：${contractFailed.error}`, usage: contractUsage };
     }
     const contracts: Record<string, unknown> = Object.fromEntries(
       contractRound.map((r) => [r.svc, r.output]),
@@ -503,9 +551,10 @@ export class Orchestrator {
         return { svc, ...r };
       }),
     );
+    const usage = mergeUsage(contractUsage, ...implementRound.map((result) => result.usage));
     const implementFailed = implementRound.find((r) => !r.ok);
     if (implementFailed) {
-      return { ok: false, error: `服务 ${implementFailed.svc} 实现产出失败：${implementFailed.error}` };
+      return { ok: false, error: `服务 ${implementFailed.svc} 实现产出失败：${implementFailed.error}`, usage };
     }
     const servicesOut: Record<string, Record<string, unknown>> = Object.fromEntries(
       implementRound.map((r) => [r.svc, r.output as Record<string, unknown>]),
@@ -526,7 +575,9 @@ export class Orchestrator {
           version: first.version ?? "v1.0.0",
         },
         rawOutput: JSON.stringify({ contracts, services: servicesOut }).slice(0, 4000),
+        usage,
       },
+      usage,
     };
   }
 
@@ -621,7 +672,7 @@ export class Orchestrator {
   /** 回滚阶段完成：回滚成功 → 打回开发；失败 → 终止 */
   private async afterTestRollback(p: Pipeline, result: AgentResult): Promise<Pipeline> {
     if (result.output?.deployed !== true) {
-      return this.fail(p, "test_rollback", "运维 Agent 报告回滚未成功：" + summarizeDeployFailure(result));
+      return this.fail(p, "test_rollback", "运维 Agent 报告回滚未成功：" + summarizeDeployFailure(result), result);
     }
     await this.notify(p, "↩️ 测试环境已回滚", `已回滚到 ${String(result.output?.revision ?? "上一稳定版本")}\n证据：${(Array.isArray(result.output?.evidence) ? result.output?.evidence : []).join("；")}`);
     return this.reworkToDev(p, "test_rollback", "验收未通过，已回滚测试环境，打回开发修复");
@@ -629,7 +680,7 @@ export class Orchestrator {
 
   private async afterTestDeploy(p: Pipeline, result: AgentResult): Promise<Pipeline> {
     if (result.output?.deployed !== true) {
-      return this.fail(p, "test_deploying", "运维 Agent 报告部署未成功：" + summarizeDeployFailure(result));
+      return this.fail(p, "test_deploying", "运维 Agent 报告部署未成功：" + summarizeDeployFailure(result), result);
     }
     const env = this.stageDefOf(p, "test_deploying")?.ops?.env ?? "test";
     const info = toDeployInfo(result, namespaceForEnv(env));
@@ -648,7 +699,7 @@ export class Orchestrator {
 
   private async afterProdDeploy(p: Pipeline, result: AgentResult): Promise<Pipeline> {
     if (result.output?.deployed !== true) {
-      return this.fail(p, "prod_deploying", "运维 Agent 报告生产部署未成功：" + summarizeDeployFailure(result));
+      return this.fail(p, "prod_deploying", "运维 Agent 报告生产部署未成功：" + summarizeDeployFailure(result), result);
     }
     const env = this.stageDefOf(p, "prod_deploying")?.ops?.env ?? "prod";
     const info = toDeployInfo(result, namespaceForEnv(env));
@@ -717,26 +768,49 @@ export class Orchestrator {
     return this.runStage(next, target);
   }
 
-  private async fail(p: Pipeline, stage: string, message: string): Promise<Pipeline> {
-    const startedAt = new Date().toISOString();
+  private async fail(p: Pipeline, stage: string, message: string, result?: AgentResult): Promise<Pipeline> {
+    const startedAt = result?.startedAt ?? new Date().toISOString();
     const finishedAt = new Date().toISOString();
+    const agentResult: AgentResult = {
+      ...result,
+      stage,
+      status: "error",
+      startedAt,
+      finishedAt,
+      error: message,
+      usage: result?.usage ?? structuredClone(EMPTY_USAGE),
+    };
+    const existingIndex = p.executions.findLastIndex(
+      (execution) => execution.stage === stage && execution.startedAt === startedAt,
+    );
+    const failedExecution = existingIndex >= 0
+      ? {
+          ...p.executions[existingIndex]!,
+          status: "error" as const,
+          finishedAt,
+          durationMs: Math.max(0, new Date(finishedAt).getTime() - new Date(startedAt).getTime()),
+          output: result?.output,
+          error: message,
+          usage: agentResult.usage,
+        }
+      : this.execution(p, stage, "error", startedAt, finishedAt, {
+          output: result?.output,
+          error: message,
+          usage: agentResult.usage,
+        });
+    const executions = existingIndex >= 0
+      ? p.executions.map((execution, index) => index === existingIndex ? failedExecution : execution)
+      : [...p.executions, failedExecution];
     this.log?.error({ pipelineId: p.id, stage, message }, "stage failed");
     let next = transition(p, "failed", ev("stage_failed", { stage, message }), this.allowedStagesOf(p));
-    next = {
+    next = this.withExecutions({
       ...next,
       failure: { stage, message },
-      executions: [...next.executions, this.execution(next, stage, "error", startedAt, finishedAt, { error: message })],
       agents: {
         ...next.agents,
-        [stage]: {
-          stage,
-          status: "error",
-          startedAt,
-          finishedAt,
-          error: message,
-        },
+        [stage]: agentResult,
       },
-    };
+    }, executions);
     this.deps.store.save(next);
     await this.notify(next, `❌ 阶段失败：${stage}`, message, "error");
     return next;

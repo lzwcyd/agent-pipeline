@@ -103,6 +103,19 @@ describe("端到端：完整流水线（mock AgentRunner）", () => {
     expect(p.executions.every((e) => e.status === "ok")).toBe(true);
     const stages = p.executions.map((e) => e.stage);
     expect(stages).toEqual(["evaluating", "dev_in_progress", "testing", "test_deploying", "awaiting_acceptance", "prod_deploying"]);
+    expect(p.executions.every((execution) => execution.usage?.requestCount === 1)).toBe(true);
+    expect(p.agents.evaluating?.usage?.requestCount).toBe(1);
+    expect(p.usage).toMatchObject({
+      inputTokens: 600,
+      outputTokens: 180,
+      reasoningTokens: 60,
+      cacheReadTokens: 1800,
+      cacheWriteTokens: 120,
+      cacheHitRate: 0.75,
+      requestCount: 6,
+      models: ["mock-model"],
+    });
+    expect(p.usage.costUsd).toBeCloseTo(0.006);
   });
 
   it("Codex JSONL 运行时可完成整条流水线", async () => {
@@ -113,6 +126,15 @@ describe("端到端：完整流水线（mock AgentRunner）", () => {
     expect(p.status).toBe("done");
     expect(p.executions).toHaveLength(6);
     expect(p.agents.testing?.output?.status).toBe("pass");
+    expect(p.usage).toMatchObject({
+      inputTokens: 600,
+      outputTokens: 180,
+      reasoningTokens: 60,
+      cacheReadTokens: 1800,
+      cacheWriteTokens: 120,
+      requestCount: 6,
+      costUsd: null,
+    });
   });
 
   it("历史查询：buildHistory 提供状态/执行/事件/统计", async () => {
@@ -126,6 +148,7 @@ describe("端到端：完整流水线（mock AgentRunner）", () => {
     expect(hist.stats.stages.evaluating?.runs).toBe(1);
     expect(hist.stats.totalExecutions).toBe(6);
     expect(hist.summary.reworkCount).toBe(0);
+    expect(hist.stats.usage).toEqual(p.usage);
   });
 
   it("评估不通过：rejected 终态", async () => {
@@ -281,12 +304,22 @@ describe("端到端：完整流水线（mock AgentRunner）", () => {
     let p = await h.orchestrator.handleSubmission(sampleSubmission);
     expect(p.status).toBe("failed");
     expect(p.failure?.stage).toBe("test_deploying");
+    expect(p.executions.filter((execution) => execution.stage === "test_deploying")).toHaveLength(1);
+    expect(p.executions.at(-1)).toMatchObject({ stage: "test_deploying", status: "error" });
+    expect(p.agents.test_deploying).toMatchObject({ status: "error", usage: { requestCount: 1 } });
+    expect(p.usage.requestCount).toBe(4);
+    const failedRequestCount = p.usage.requestCount;
 
     // “修复”后重试同一流水线
     process.env.MOCK_OPS_FAIL = undefined;
     p = await h.orchestrator.retry(p.id);
     expect(p.status).toBe("done");
     expect(p.events.some((e) => e.type === "retried")).toBe(true);
+    expect(p.usage.requestCount).toBe(7);
+    expect(p.usage.requestCount).toBeGreaterThan(failedRequestCount);
+    expect(p.usage.requestCount).toBe(
+      p.executions.reduce((total, execution) => total + (execution.usage?.requestCount ?? 0), 0),
+    );
   });
 });
 
@@ -378,6 +411,9 @@ describe("多开发 Agent 并行联调（multi-dev 模板）", () => {
     // 后续阶段照常（测试/部署/验收/生产）
     expect(p.agents.testing?.output?.status).toBe("pass");
     expect(p.deploy?.prod?.namespace).toBe("demo-prod");
+    const devUsage = p.executions.find((execution) => execution.stage === "dev_in_progress")?.usage;
+    expect(devUsage).toMatchObject({ requestCount: 4, inputTokens: 400, cacheReadTokens: 1200 });
+    expect(p.usage.requestCount).toBe(9);
   });
 
   it("子任务输出不可解析时自动重试一次并成功", async () => {
@@ -389,6 +425,10 @@ describe("多开发 Agent 并行联调（multi-dev 模板）", () => {
     expect(p.status).toBe("done");
     expect(p.agents.dev_in_progress?.output?.multi).toBe(true);
     expect(Object.keys(p.agents.dev_in_progress?.output?.contracts ?? {}).length).toBe(2);
+    const devUsage = p.executions.find((execution) => execution.stage === "dev_in_progress")?.usage;
+    // 两个服务各有一次坏契约输出和一次重试，再各执行一次实现请求。
+    expect(devUsage).toMatchObject({ requestCount: 6, inputTokens: 600, cacheReadTokens: 1800 });
+    expect(p.usage.requestCount).toBe(11);
   });
 });
 
