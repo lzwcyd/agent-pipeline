@@ -1,3 +1,5 @@
+import type { AgentUsage } from "./agents/usage.js";
+
 /** 表单来源类型 */
 export type FormSourceKind = "mock" | "feishu" | "dingtalk";
 
@@ -84,6 +86,8 @@ export interface AgentResult {
   /** 原始 stdout */
   rawOutput?: string;
   error?: string;
+  /** 本次 Agent 执行产生的全部真实模型请求用量 */
+  usage?: AgentUsage;
 }
 
 /** Agent 在 artifacts 目录中产出的文件 */
@@ -136,6 +140,8 @@ export interface Pipeline {
   reworkCount?: number;
   /** 每次阶段执行的历史记录（含打回后的多轮执行） */
   executions: PipelineExecution[];
+  /** 从全部阶段执行历史派生的模型用量汇总 */
+  usage: AgentUsage;
 }
 
 /** 一次阶段执行记录（历史信息） */
@@ -152,6 +158,8 @@ export interface PipelineExecution {
   output?: Record<string, unknown>;
   /** 失败原因 */
   error?: string;
+  /** 本轮阶段执行产生的模型用量 */
+  usage?: AgentUsage;
 }
 
 /** Agent 任务的统一入参（会整体作为 headless 任务的 task 文本） */

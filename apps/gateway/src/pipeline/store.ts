@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { EMPTY_USAGE } from "../agents/usage.js";
 import type { Pipeline } from "../types.js";
 
 /**
@@ -26,6 +27,7 @@ export class PipelineStore {
       agents: {},
       artifacts: [],
       executions: [],
+      usage: structuredClone(EMPTY_USAGE),
     };
     this.save(pipeline);
     return pipeline;
