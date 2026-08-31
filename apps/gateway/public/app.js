@@ -278,7 +278,7 @@ async function loadPipelines() {
     const tb = $("#pipeline-table tbody");
     tb.innerHTML = pipelines
       .map(
-        (p) => `<tr data-id="${p.id}" class="row">
+        (p) => `<tr data-id="${p.id}">
           <td class="mono">${p.id.slice(0, 8)}</td>
           <td>${esc(p.title.slice(0, 30))}</td>
           <td><span class="status ${statusClass(p.status)}">${p.status}</span></td>

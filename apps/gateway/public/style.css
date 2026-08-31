@@ -77,7 +77,8 @@ table.list, #pipeline-table { width: 100%; border-collapse: collapse; font-size:
 .st-submitted, .st-evaluating, .st-dev_in_progress, .st-testing, .st-test_deploying, .st-awaiting_acceptance, .st-test_rollback, .st-prod_deploying { background: rgba(76,141,255,.15); color: var(--accent); }
 .st-rejected, .st-failed { background: rgba(255,92,92,.15); color: var(--err); }
 
-.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.detail-grid > * { min-width: 0; }
 .detail-grid .full { grid-column: 1 / -1; }
 .timeline { list-style: none; padding: 0; margin: 0; font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; }
 .timeline li { padding: 3px 0; border-bottom: 1px dashed var(--border); }

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -192,6 +192,53 @@ describe("运行时可靠性与失败用量", () => {
     expect(p.agents.dev_in_progress?.usage?.requestCount).toBe(2);
     expect(p.executions.at(-1)?.usage?.requestCount).toBe(2);
     expect(p.usage.requestCount).toBe(3);
+  });
+
+  it("阶段目录初始化失败记录真实阶段，修复目录后可重试", async () => {
+    h = makeHarness();
+    const initial = h.store.create(sampleSubmission);
+    const parent = join(h.cfg.artifactsRoot, initial.id);
+    const blocked = join(parent, "evaluating");
+    mkdirSync(parent, { recursive: true });
+    writeFileSync(blocked, "not a directory");
+
+    await h.orchestrator.resumePending();
+    const failed = await h.orchestrator.awaitPipeline(initial.id, 60000);
+    expect(failed.status).toBe("failed");
+    expect(failed.failure?.stage).toBe("evaluating");
+    expect(failed.usage.requestCount).toBe(0);
+
+    rmSync(blocked);
+    const retried = await h.orchestrator.retry(initial.id);
+    expect(retried.status).toBe("done");
+    expect(retried.usage.requestCount).toBe(6);
+  });
+
+  it("一个服务目录初始化失败时，等待并累计其他服务的实际请求", async () => {
+    const calls: Promise<unknown>[] = [];
+    h = makeHarness({}, loadTemplate(join(REPO_ROOT, "config", "pipelines", "multi-dev.json")), undefined, {
+      wrapRunner: (runner) => ({
+        runtime: runner.runtime,
+        run(task, cwd) {
+          const call = runner.run(task, cwd);
+          calls.push(call);
+          return call;
+        },
+      }),
+    });
+    const initial = h.store.create(sampleSubmission, "multi-dev");
+    const parent = join(h.cfg.artifactsRoot, initial.id, "dev_in_progress");
+    mkdirSync(parent, { recursive: true });
+    writeFileSync(join(parent, "payment-service"), "not a directory");
+
+    await h.orchestrator.resumePending();
+    const failed = await h.orchestrator.awaitPipeline(initial.id, 60000);
+    await Promise.allSettled(calls);
+    expect(failed.status).toBe("failed");
+    expect(failed.failure?.stage).toBe("dev_in_progress");
+    expect(failed.agents.dev_in_progress?.usage?.requestCount).toBe(1);
+    expect(failed.executions.at(-1)?.usage?.requestCount).toBe(1);
+    expect(failed.usage.requestCount).toBe(2);
   });
 });
 

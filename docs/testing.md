@@ -59,6 +59,10 @@ corepack pnpm --filter @pipeline/gateway exec vitest run test/runner.test.ts
 - 流水线用量必须等于 `executions[].usage` 的合并结果。
 - Provider 未返回费用时必须保持 `null`，不能在测试或生产代码中估算。
 
+## Web 展示冒烟
+
+使用 `AGENT_CLI` 指向 `scripts/mock-agent.mjs` 启动控制台，提交一条模拟流水线后检查列表、详情和配置页。确认用量卡片完整显示、表头与数据对齐；详情包含较长 JSONL 原始输出时，网格不能被撑出页面宽度。窄窗口下用量卡片应切换为双列，会话 ID 可换行，未知费用显示 `—`。
+
 ## 真实冒烟（可选）
 
 先让全部 mock 测试通过，再选择一个已认证的 CLI：

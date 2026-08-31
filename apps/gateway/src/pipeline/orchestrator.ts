@@ -342,8 +342,12 @@ export class Orchestrator {
     this.log?.info({ pipelineId: current.id, stage, agent: def.agent, round: this.stageRound(current, stage) }, "stage started");
 
     const artifactsDir = join(this.deps.cfg.artifactsRoot, current.id, stage);
-    mkdirSync(artifactsDir, { recursive: true });
     const startedAt = new Date().toISOString();
+    try {
+      mkdirSync(artifactsDir, { recursive: true });
+    } catch (err) {
+      return this.fail(current, stage, err instanceof Error ? err.message : String(err));
+    }
 
     let agentResult: AgentResult;
     if (def.multi) {
@@ -495,11 +499,11 @@ export class Orchestrator {
       ctx: Record<string, unknown>,
     ): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string; usage: AgentUsage }> => {
       const dir = join(artifactsDir, svc);
-      mkdirSync(dir, { recursive: true });
-      const agentDef = this.deps.agentRegistry.get(def.agent);
-      const task = buildAgentTask(p, def.id, def.agent, agentDef, ctx, dir);
       let usage = structuredClone(EMPTY_USAGE);
       try {
+        mkdirSync(dir, { recursive: true });
+        const agentDef = this.deps.agentRegistry.get(def.agent);
+        const task = buildAgentTask(p, def.id, def.agent, agentDef, ctx, dir);
         const run = await this.deps.runner.run(task, this.deps.cfg.workspaceRoot);
         usage = mergeUsage(usage, run.usage);
         const phase = ctx.phase;
