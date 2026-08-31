@@ -4,13 +4,15 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { createAgentRunner } from "../src/agents/provider.js";
+import type { AgentRunner } from "../src/agents/runner.js";
 import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
-import { CompositeNotifier } from "../src/notify/notifier.js";
+import { CompositeNotifier, type Notifier } from "../src/notify/notifier.js";
 import { DEFAULT_TEMPLATE, TemplateRegistry, loadTemplate } from "../src/pipeline/template.js";
 import { AgentRegistry } from "../src/agents/registry.js";
 import type { EnvConfig } from "../src/config.js";
 import type { PipelineTemplate } from "../src/pipeline/template.js";
+import type { AgentTask } from "../src/types.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const MOCK_AGENT = join(REPO_ROOT, "scripts", "mock-agent.mjs");
@@ -22,7 +24,12 @@ interface Harness {
   cleanup: () => void;
 }
 
-function makeHarness(env: Record<string, string> = {}, template: PipelineTemplate | TemplateRegistry = DEFAULT_TEMPLATE, dataDir?: string): Harness {
+function makeHarness(
+  env: Record<string, string> = {},
+  template: PipelineTemplate | TemplateRegistry = DEFAULT_TEMPLATE,
+  dataDir?: string,
+  options: { wrapRunner?: (runner: AgentRunner) => AgentRunner; notifier?: Notifier } = {},
+): Harness {
   const dir = dataDir ?? mkdtempSync(join(tmpdir(), "pipeline-e2e-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
@@ -38,8 +45,9 @@ function makeHarness(env: Record<string, string> = {}, template: PipelineTemplat
   });
   const cfg = loadConfig();
   const store = new PipelineStore(cfg.pipelinesDir);
-  const notifier = new CompositeNotifier(cfg);
-  const runner = createAgentRunner(cfg);
+  const notifier = options.notifier ?? new CompositeNotifier(cfg);
+  const provider = createAgentRunner(cfg);
+  const runner = options.wrapRunner?.(provider) ?? provider;
   const registry = template instanceof TemplateRegistry ? template : new TemplateRegistry({ initial: [template] });
   const defaultTemplate =
     template instanceof TemplateRegistry
@@ -69,6 +77,123 @@ const sampleSubmission = {
   meta: { triggerType: "form" as const, detail: "mock" },
   raw: {},
 };
+
+describe("运行时可靠性与失败用量", () => {
+  let h: Harness;
+  const projects: string[] = [];
+  afterEach(() => {
+    h?.cleanup();
+    projects.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }));
+  });
+
+  it.each(["opencode", "codex"])("%s：单 Agent 和并行 Agent 使用项目根，产物仍按阶段隔离", async (runtime) => {
+    const project = mkdtempSync(join(tmpdir(), "pipeline-workspace-"));
+    projects.push(project);
+    const calls: { task: AgentTask; cwd: string }[] = [];
+    h = makeHarness(
+      { AGENT_RUNTIME: runtime, PIPELINE_MODE: "real", DEV_PROJECT_PATH: project },
+      loadTemplate(join(REPO_ROOT, "config", "pipelines", "multi-dev.json")),
+      undefined,
+      { wrapRunner: (runner) => ({
+        runtime: runner.runtime,
+        run: (task, cwd) => {
+          calls.push({ task, cwd });
+          return runner.run(task, cwd);
+        },
+      }) },
+    );
+
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("done");
+    expect(calls).toHaveLength(9);
+    expect([...new Set(calls.map((call) => call.cwd))]).toEqual([project]);
+    expect(calls.every(({ task }) => task.artifactsDir.startsWith(join(project, ".agent-pipeline", "artifacts") + "/"))).toBe(true);
+    const development = calls.filter(({ task }) => task.stage === "dev_in_progress");
+    expect(development).toHaveLength(4);
+    expect(new Set(development.map(({ task }) => task.artifactsDir)).size).toBe(2);
+  });
+
+  it("阶段推进异常前保存成功请求，恢复重跑时保留原用量", async () => {
+    h = makeHarness({ MOCK_TEST_FAIL: "1" }, DEFAULT_TEMPLATE, undefined, {
+      notifier: {
+        async notify(_pipeline, title) {
+          if (title.includes("测试未通过")) throw new Error("dispatch interrupted");
+        },
+        async close() {},
+      },
+    });
+    const interrupted = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(interrupted.status).toBe("failed");
+    expect(interrupted.failure?.message).toBe("dispatch interrupted");
+    expect(interrupted.agents.testing?.usage?.requestCount).toBe(1);
+    expect(interrupted.executions.at(-1)).toMatchObject({ stage: "testing", usage: { requestCount: 1 } });
+    expect(interrupted.usage.requestCount).toBe(3);
+
+    delete process.env.MOCK_TEST_FAIL;
+    h.store.save({ ...interrupted, status: "testing", failure: undefined });
+    expect(await h.orchestrator.resumePending()).toBe(1);
+    const recovered = await h.orchestrator.awaitPipeline(interrupted.id, 60000);
+    expect(recovered.status).toBe("done");
+    expect(recovered.executions.filter((execution) => execution.stage === "testing").map((execution) => execution.round)).toEqual([1, 2]);
+    expect(recovered.usage.requestCount).toBe(7);
+  });
+
+  it.each(["opencode", "codex"])("%s：非零退出保留已输出的模型请求", async (runtime) => {
+    h = makeHarness({ AGENT_RUNTIME: runtime, MOCK_EXIT_AFTER_USAGE: "evaluator" });
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("failed");
+    expect(p.agents.evaluating).toMatchObject({ status: "error", usage: { requestCount: 1, inputTokens: 100 } });
+    expect(p.executions).toHaveLength(1);
+    expect(p.executions[0]).toMatchObject({ status: "error", usage: { requestCount: 1 } });
+    expect(p.usage.requestCount).toBe(1);
+  });
+
+  it.each(["opencode", "codex"])("%s：输出用量后超时仍计入 Agent、历史和流水线", async (runtime) => {
+    h = makeHarness({ AGENT_RUNTIME: runtime, AGENT_TIMEOUT_MS: "500", MOCK_TIMEOUT_AFTER_USAGE: "evaluator" });
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("failed");
+    expect(p.failure?.message).toContain("timed out");
+    expect(p.agents.evaluating).toMatchObject({ status: "error", usage: { requestCount: 1, inputTokens: 100 } });
+    expect(p.executions[0]).toMatchObject({ status: "error", usage: { requestCount: 1 } });
+    expect(p.usage.requestCount).toBe(1);
+  });
+
+  it("并行服务失败且重试仍失败时，合并成功分支和两次失败请求", async () => {
+    h = makeHarness(
+      { MOCK_BAD_JSON_ALWAYS_SERVICE: "payment-service" },
+      loadTemplate(join(REPO_ROOT, "config", "pipelines", "multi-dev.json")),
+    );
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("failed");
+    expect(p.failure?.message).toContain("payment-service");
+    expect(p.agents.dev_in_progress).toMatchObject({ status: "error", usage: { requestCount: 3, inputTokens: 300 } });
+    expect(p.executions.at(-1)).toMatchObject({ stage: "dev_in_progress", status: "error", usage: { requestCount: 3 } });
+    expect(p.usage.requestCount).toBe(4);
+  });
+
+  it("重试调用抛错时，保留首次已完成请求和其他并行分支用量", async () => {
+    let paymentAttempts = 0;
+    h = makeHarness(
+      { MOCK_BAD_JSON_ALWAYS_SERVICE: "payment-service" },
+      loadTemplate(join(REPO_ROOT, "config", "pipelines", "multi-dev.json")),
+      undefined,
+      { wrapRunner: (runner) => ({
+        runtime: runner.runtime,
+        async run(task, cwd) {
+          const service = task.context.service as { name?: string } | undefined;
+          if (service?.name === "payment-service" && ++paymentAttempts === 2) throw new Error("retry launch failed");
+          return runner.run(task, cwd);
+        },
+      }) },
+    );
+    const p = await h.orchestrator.handleSubmission(sampleSubmission);
+    expect(p.status).toBe("failed");
+    expect(p.failure?.message).toContain("retry launch failed");
+    expect(p.agents.dev_in_progress?.usage?.requestCount).toBe(2);
+    expect(p.executions.at(-1)?.usage?.requestCount).toBe(2);
+    expect(p.usage.requestCount).toBe(3);
+  });
+});
 
 describe("端到端：完整流水线（mock AgentRunner）", () => {
   let h: Harness;

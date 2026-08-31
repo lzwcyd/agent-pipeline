@@ -61,4 +61,29 @@ describe("PipelineStore usage normalization", () => {
 
     expect(store.get(pipeline.id)?.usage).toMatchObject({ requestCount: 1, inputTokens: 10 });
   });
+
+  it("keeps partially compatible usage snapshots readable when metadata arrays are missing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pipeline-store-"));
+    dirs.push(dir);
+    const store = new PipelineStore(dir);
+    const pipeline = store.create(submission);
+    const now = new Date().toISOString();
+    const snapshot = {
+      ...pipeline,
+      executions: [{
+        stage: "evaluating", round: 1, status: "ok", startedAt: now, finishedAt: now, durationMs: 0,
+        usage: { requestCount: 2, inputTokens: 12, sessionIds: null, models: ["valid-model", 9, null] },
+      }],
+    };
+    writeFileSync(join(dir, `${pipeline.id}.json`), JSON.stringify(snapshot), "utf8");
+
+    expect(store.get(pipeline.id)?.usage).toMatchObject({
+      requestCount: 2,
+      inputTokens: 12,
+      outputTokens: 0,
+      sessionIds: [],
+      models: ["valid-model"],
+      costUsd: null,
+    });
+  });
 });

@@ -21,6 +21,8 @@ export function runProcess(opts: ProcessRunOptions): Promise<ProcessRunResult> {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
     const child = spawn(opts.cli, opts.args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -38,25 +40,34 @@ export function runProcess(opts: ProcessRunOptions): Promise<ProcessRunResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(drainTimer);
       resolvePromise(result);
     };
 
+    const timeoutResult = (): ProcessRunResult => ({
+      status: "timeout",
+      exitCode: -1,
+      stdout,
+      stderr,
+      error: `agent CLI timed out after ${opts.timeoutMs}ms`,
+    });
     const timer = setTimeout(() => {
+      timedOut = true;
+      // close 在 stdout/stderr 排空后触发；保留终止前已经写入管道的 JSONL。
+      // 若后代进程持有管道不释放，限定额外等待时间，避免永久挂起。
+      drainTimer = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(timeoutResult());
+      }, 1000);
       child.kill("SIGKILL");
-      finish({
-        status: "timeout",
-        exitCode: -1,
-        stdout,
-        stderr,
-        error: `agent CLI timed out after ${opts.timeoutMs}ms`,
-      });
     }, opts.timeoutMs);
 
     child.on("error", (error) => {
-      finish({ status: "error", exitCode: -1, stdout, stderr, error: error.message });
+      if (!timedOut) finish({ status: "error", exitCode: -1, stdout, stderr, error: error.message });
     });
     child.on("close", (code) => {
-      finish({ status: "ok", exitCode: code ?? -1, stdout, stderr });
+      finish(timedOut ? timeoutResult() : { status: "ok", exitCode: code ?? -1, stdout, stderr });
     });
   });
 }

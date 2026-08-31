@@ -78,7 +78,8 @@
 - `provider.ts` 按 `AGENT_RUNTIME=opencode|codex` 创建 Provider。
 - `OpenCodeRunner` 执行 `opencode run --format json --dir <cwd> [--model ...] <task>`，拼接 `text` 事件并按每个 `step_finish` 统计请求。
 - `CodexRunner` 执行 `codex exec --json -C <cwd> --sandbox <mode> [--model ...] <task>`，读取最后一个 `agent_message` 并按每个 `turn.completed` 统计请求。
-- `process.ts` 只负责启动、超时终止和收集输出；协议解析完全留在 Provider。
+- 所有单 Agent、并行子任务和重试的 `cwd` 均为配置的工作区根（指定工程时为工程根，否则为数据目录）；`task.artifactsDir` 仍按流水线、阶段和服务隔离，避免 Codex 沙箱被误限制在产物子目录。
+- `process.ts` 只负责启动、超时终止和收集输出；超时后等待 `close` 排空管道，最多额外等待 1 秒。协议解析完全留在 Provider。
 - 单行损坏的 JSONL 被跳过；CLI 失败或最终业务 JSON 不可解析时仍保留已经收到的用量。
 
 ### 2.2.2 可定制编排（流程模板）
@@ -90,9 +91,11 @@
 状态与迁移见 README。内置阶段迁移由 TRANSITIONS 约束，自定义阶段由模板声明流转（transition 的 allowed 参数）。持久化两处：
 
 - `data/pipelines/<id>.json`：流水线全量快照（事件、Agent 结果、**executions 历史与用量**、流水线用量汇总、产物清单），原子写（tmp+rename）。
-- `data/artifacts/<id>/<stage>/`：agent 工作目录，产出文件（dev-plan.md、rendered-manifests.yaml 等）由网关登记进流水线。
+- `data/artifacts/<id>/<stage>/`：阶段产物目录（不是 CLI 工作目录），产出文件（dev-plan.md、rendered-manifests.yaml 等）由网关登记进流水线。
 
 **历史执行信息**：每次阶段执行追加 `PipelineExecution {stage, round, status, startedAt, finishedAt, durationMs, output?, error?, usage?}`。打回、自动重试和人工 retry 不覆盖历史。`buildHistory()` 从执行记录派生 `stats.usage`，旧快照缺少用量时按零处理。
+
+成功调用的 Agent 结果、执行历史和用量在阶段推进前立即持久化；若之后中断，恢复重跑会追加新轮次并保留已有请求。旧快照中缺失或无效的会话/模型数组按空数组处理。
 
 ### 2.3.1 统一用量模型
 
@@ -101,7 +104,7 @@
 - Codex 输入扣除 `cached_input_tokens`，输出扣除 `reasoning_output_tokens`；计数不一致时下限为零。
 - 缓存命中率 = `cacheReadTokens / (inputTokens + cacheReadTokens)`，每次合并后重算而非平均。
 - Token、请求和费用累加；会话 ID、模型仅去重展示；没有 Provider 费用时为 `null`，不自行估价。
-- 普通阶段写入一次 runner 用量；多 Agent 阶段合并契约轮、实现轮和所有重试；失败与超时也写入已收集用量。
+- 普通阶段写入一次 runner 用量；多 Agent 阶段合并契约轮、实现轮和所有重试；失败、超时以及重试调用抛错时也保留已收集用量。
 - `Pipeline.usage` 只从 `executions[].usage` 派生，是持久化与 Web/API 展示的单一汇总来源。
 
 ### 2.4 日志

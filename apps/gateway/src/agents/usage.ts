@@ -48,6 +48,10 @@ function count(value: number | undefined): number {
   return Number.isFinite(value) && (value ?? 0) > 0 ? value! : 0;
 }
 
+function identifiers(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
 /** 合并请求或既有汇总；命中率始终从合计 Token 重算。 */
 export function mergeUsage(...sources: UsageSource[]): AgentUsage {
   const merged: AgentUsage = structuredClone(EMPTY_USAGE);
@@ -63,8 +67,8 @@ export function mergeUsage(...sources: UsageSource[]): AgentUsage {
 
     if ("requestCount" in source) {
       merged.requestCount += count(source.requestCount);
-      merged.sessionIds.push(...source.sessionIds.filter(Boolean));
-      merged.models.push(...source.models.filter(Boolean));
+      merged.sessionIds.push(...identifiers(source.sessionIds));
+      merged.models.push(...identifiers(source.models));
       if (source.costUsd !== null && Number.isFinite(source.costUsd)) {
         hasReportedCost = true;
         merged.costUsd = (merged.costUsd ?? 0) + source.costUsd;

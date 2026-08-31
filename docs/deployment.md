@@ -152,7 +152,7 @@ docker run -d --name agent-pipeline-gateway \
 
 - 数据目录 `data/`：
   - `pipelines/<id>.json`：流水线快照（状态、事件、执行历史、Agent/阶段/流水线用量、产物清单）
-  - `artifacts/<id>/<stage>/`：各阶段 agent 工作目录与产物
+  - `artifacts/<id>/<stage>/`：各阶段产物（CLI 工作目录为工程根或数据目录）
   - `logs/pipeline.log`：结构化日志（pino JSON 行）
 - 备份：定期归档 `data/pipelines/` 与 `data/artifacts/` 即可；日志可按需轮转（外部 logrotate）。
 

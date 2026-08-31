@@ -129,6 +129,24 @@ describe("Codex provider", () => {
 });
 
 describe("provider process and factory", () => {
+  it("reports a spawn error without inventing model requests", async () => {
+    const runner = createAgentRunner(loadConfig({ AGENT_CLI: "/nonexistent-pipeline-test/agent" }));
+    const result = await runner.run({
+      pipelineId: "spawn-error",
+      stage: "evaluating",
+      role: "evaluator",
+      requirement: { title: "test", description: "", submitter: "test", fields: {} },
+      context: {},
+      instructions: "return JSON",
+      outputSchema: "{}",
+      artifactsDir: process.cwd(),
+    }, process.cwd());
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("ENOENT");
+    expect(result.usage).toMatchObject({ requestCount: 0, inputTokens: 0, costUsd: null });
+  });
+
   it("returns partial output when a child process times out", async () => {
     const result = await runProcess({
       cli: process.execPath,

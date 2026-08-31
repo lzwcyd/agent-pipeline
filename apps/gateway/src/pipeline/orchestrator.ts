@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, relative } from "node:path";
 import type { EnvConfig } from "../config.js";
@@ -342,6 +342,7 @@ export class Orchestrator {
     this.log?.info({ pipelineId: current.id, stage, agent: def.agent, round: this.stageRound(current, stage) }, "stage started");
 
     const artifactsDir = join(this.deps.cfg.artifactsRoot, current.id, stage);
+    mkdirSync(artifactsDir, { recursive: true });
     const startedAt = new Date().toISOString();
 
     let agentResult: AgentResult;
@@ -363,7 +364,7 @@ export class Orchestrator {
       const agentDef = this.deps.agentRegistry.get(def.agent);
       const task = buildAgentTask(current, stage, def.agent, agentDef, context, artifactsDir);
       try {
-        const run = await this.deps.runner.run(task, artifactsDir);
+        const run = await this.deps.runner.run(task, this.deps.cfg.workspaceRoot);
         if (run.status !== "ok" || run.exitCode !== 0 || !run.parsed) {
           const detail = (run.stderr || run.stdout).slice(-800);
           const message = run.error ?? `agent 退出码 ${run.exitCode} 或输出不可解析：${detail}`;
@@ -410,6 +411,8 @@ export class Orchestrator {
       ],
       updatedAt: new Date().toISOString(),
     }, executions);
+    // 先提交模型请求结果，再执行可能抛错或中断的阶段推进逻辑。
+    this.deps.store.save(current);
     this.log?.info({ pipelineId: current.id, stage }, "stage completed");
 
     return this.dispatch(current, stage, agentResult);
@@ -492,17 +495,20 @@ export class Orchestrator {
       ctx: Record<string, unknown>,
     ): Promise<{ ok: boolean; output?: Record<string, unknown>; error?: string; usage: AgentUsage }> => {
       const dir = join(artifactsDir, svc);
+      mkdirSync(dir, { recursive: true });
       const agentDef = this.deps.agentRegistry.get(def.agent);
       const task = buildAgentTask(p, def.id, def.agent, agentDef, ctx, dir);
+      let usage = structuredClone(EMPTY_USAGE);
       try {
-        const run = await this.deps.runner.run(task, dir);
+        const run = await this.deps.runner.run(task, this.deps.cfg.workspaceRoot);
+        usage = mergeUsage(usage, run.usage);
         const phase = ctx.phase;
         const validOutput = run.parsed && (
           phase !== "contract" ||
           (run.parsed.service === svc && run.parsed.contract !== null && typeof run.parsed.contract === "object")
         );
         if (run.status === "ok" && run.exitCode === 0 && validOutput) {
-          return { ok: true, output: run.parsed!, usage: run.usage };
+          return { ok: true, output: run.parsed!, usage };
         }
         // 输出不可解析或异常退出：带提示重试一次（真实 agent 偶尔把 JSON 写进文件/围栏外）
         const reason = run.exitCode !== 0
@@ -513,19 +519,19 @@ export class Orchestrator {
           instructions: `${task.instructions}\n\n注意：上一次输出未通过校验（${reason}）。请把结果作为【唯一的 JSON 对象】输出到 stdout，不要围栏、不要解释、不要只写文件。`,
         };
         this.log?.warn({ pipelineId: p.id, stage: def.id, svc, reason }, "multi-agent sub-task retry");
-        const retry = await this.deps.runner.run(retryTask, dir);
+        const retry = await this.deps.runner.run(retryTask, this.deps.cfg.workspaceRoot);
+        usage = mergeUsage(usage, retry.usage);
         const retryValidOutput = retry.parsed && (
           phase !== "contract" ||
           (retry.parsed.service === svc && retry.parsed.contract !== null && typeof retry.parsed.contract === "object")
         );
-        const usage = mergeUsage(run.usage, retry.usage);
         if (retry.status === "ok" && retry.exitCode === 0 && retryValidOutput) {
           return { ok: true, output: retry.parsed!, usage };
         }
         const tail = (retry.stdout || retry.stderr).slice(-400) || (run.stdout || run.stderr).slice(-400);
         return { ok: false, error: `输出不可解析（${reason}）：${tail}`, usage };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err), usage: structuredClone(EMPTY_USAGE) };
+        return { ok: false, error: err instanceof Error ? err.message : String(err), usage };
       }
     };
 

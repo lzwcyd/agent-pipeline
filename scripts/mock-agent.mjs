@@ -12,6 +12,9 @@
 //   MOCK_OPS_FAIL=1              运维部署返回失败
 //   MOCK_ROLLBACK_FAIL=1         回滚动作返回失败
 //   MOCK_BAD_JSON_FIRST=1        开发阶段首次输出不可解析（测试自动重试）
+//   MOCK_BAD_JSON_ALWAYS_SERVICE=<服务名> 指定服务持续输出无效契约（含重试）
+//   MOCK_EXIT_AFTER_USAGE=<角色> 输出用量后以非零退出码结束
+//   MOCK_TIMEOUT_AFTER_USAGE=<角色> 输出用量后保持运行，等待测试超时终止
 // once 类开关用 artifactsDir 下的状态文件按流水线计数。
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -81,6 +84,10 @@ switch (role) {
   case "developer": {
     const phase = task?.context?.phase;
     const svc = task?.context?.service?.name ?? "";
+    if (svc && process.env.MOCK_BAD_JSON_ALWAYS_SERVICE === svc) {
+      output = { note: "契约生成失败（模拟持续失败）" };
+      break;
+    }
     // 首次输出无效 JSON（测试自动重试路径）
     if (process.env.MOCK_BAD_JSON_FIRST === "1" && tickState(join(artifactsDir ?? ".", ".mock-badjson-state")) === 0) {
       output = { note: "抱歉，我的分析如下：契约已写入文件。" };
@@ -281,3 +288,6 @@ if (runtime === "codex") {
     },
   }));
 }
+
+if (process.env.MOCK_EXIT_AFTER_USAGE === role) process.exitCode = 23;
+if (process.env.MOCK_TIMEOUT_AFTER_USAGE === role) setInterval(() => {}, 1000);
