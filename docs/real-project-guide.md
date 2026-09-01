@@ -29,7 +29,7 @@ PIPELINE_MODE=real
 DEV_PROJECT_DIR=my-project        # 也支持绝对路径（等价方式 A）
 ```
 
-**沙箱说明**：网关把 `PIPELINE_WORKSPACE_ROOT` 注入 headless profile 的 `fs-sandbox.cwd`，Agent 的文件/命令沙箱根 = **目标工程根**——开发 Agent 可以读写整个工程目录（含任意路径的外部工程），但不能越出工程（安全边界）。工程外置时，流水线产物存放在工程内的 `.agent-pipeline/artifacts/`（建议加入工程的 `.gitignore`）。修改 profile 后需**重启网关**。
+**工作区与沙箱**：网关把目标工程根作为 Provider 的工作目录（OpenCode `--dir`，Codex `-C`），并设置 `PIPELINE_WORKSPACE_ROOT`。工程外置时，流水线产物存放在工程内 `.agent-pipeline/artifacts/`（建议加入工程 `.gitignore`）。Codex 的写入边界由 `CODEX_SANDBOX` 控制，真实开发通常使用 `workspace-write`；`read-only` 不能完成代码修改，`danger-full-access` 只应在额外隔离环境中启用。OpenCode 权限沿用它自身的配置，网关不额外放宽权限。
 
 **git 提交**：开发 Agent 会用本机 git 凭证执行 `git checkout -b feature/...`、`git add/commit`、`git push`（`context.repoDir` 注入，persona 已含真实开发指令）。
 
@@ -161,7 +161,7 @@ curl -X POST http://127.0.0.1:3081/api/pipelines -H 'Content-Type: application/j
 
 | 问题 | 处理 |
 | --- | --- |
-| 开发 Agent 无法写入工程目录 | 确认 `PIPELINE_WORKSPACE_ROOT` 生效（重启网关）；工程目录需在 `DEV_PROJECT_PATH`/`DEV_PROJECT_DIR` 中正确指定，Agent 沙箱根=工程根 |
+| 开发 Agent 无法写入工程目录 | 确认 `DEV_PROJECT_PATH`/`DEV_PROJECT_DIR`、系统文件权限；Codex 检查 `CODEX_SANDBOX=workspace-write`，OpenCode 检查其自身权限配置；修改环境变量后重启网关 |
 | 部署失败"找不到清单" | `OPS_MANIFESTS_DIR` 相对 agent-pipeline 仓库根；确认 base/overlays 结构 |
 | 镜像版本不一致 | 预构建并推送 `version` 对应的镜像；kustomize 用 `images.newTag` 参数化 |
 | git push 失败 | 本机 git 凭证需可 push 目标仓库（agent 使用本机凭证） |

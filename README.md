@@ -27,7 +27,8 @@
                                                 └────────────────┘
 ```
 
-- **Agent 运行时**：DeepSeek Harness（DSH）`headless` profile —— 每个角色一次 `dsh --profile headless "<task>"` 调用，输出严格 JSON 驱动状态机。
+- **通用 Agent 运行时**：编排器只依赖 `AgentRunner`；通过 `AGENT_RUNTIME=opencode|codex` 选择 `opencode run` 或 `codex exec --json`，Provider JSONL 输出统一为结构化结果与用量。
+- **统一用量**：输入、输出、推理、缓存读写 Token、命中率、请求数、会话、模型与 Provider 费用写入阶段和流水线，并在 Web 展示；并行与重试按全部实际请求累计。
 - **模板平台**：多个流程模板并存、同时使用、互不干扰——触发时按需求选择模板（`policy.template` 或页面下拉），Web 保存新模板**立即生效**（动态注册），可增删 Agent 节点；**模板快照**保证修改模板不影响已触发流水线。
 - **Agent 定义管理**：内置 6 个 Agent + 用户自定义扩展（persona/schema/判定规则），新角色无需改代码，见 [docs/usage.md](docs/usage.md#6-agent-定义管理与自定义扩展)。
 - **平台韧性**：进程重启后**自动恢复**未完成的流水线（从断点续跑，人工验收等待不受打扰）。
@@ -46,48 +47,60 @@
 │   └── src/
 │       ├── forms/           # 触发源：mock / feishu / dingtalk / api（统一归一化 + 验签）
 │       ├── pipeline/        # 状态机、流程模板、持久化、编排器、历史视图
-│       ├── agents/          # DSH runner（含日志）、角色 prompt、任务组装
+│       ├── agents/          # AgentRunner、OpenCode/Codex Provider、用量、角色与任务
 │       ├── notify/          # 通知器：console / 飞书机器人 / 钉钉机器人
 │       ├── public/          # Web 控制台（触发/配置/进度与日志）
 │       └── http/ cli/       # webhook+API、命令行
 ├── config/pipelines/        # 模板注册目录（*.json 全量注册，Web 动态保存/删除）
-├── profiles/headless/       # DSH headless profile（agent 运行时，需安装到 ~/.dsh）
 ├── k8s/demo-app/            # 示例应用清单（base + test/prod overlay，kustomize）
-├── scripts/                 # 安装、模拟提交、一键演示
+├── scripts/                 # 统一 mock Agent、模拟提交、一键演示
 └── docs/architecture.md     # 详细设计
 ```
 
 ## 快速开始
 
-**前置**：Node ≥ 22、corepack、已安装 dsh 且 `~/.dsh/.credentials.yaml` 有 `DEEPSEEK_API_KEY`（Web GUI 能跑即满足）。
+**前置**：Node ≥ 22、corepack，并安装且认证至少一个运行时 CLI：OpenCode 或 Codex。
 
 ```bash
 # 1. 安装依赖
 corepack pnpm install
 
-# 2. 安装 DSH headless profile（一次性）
-bash scripts/install-headless-profile.sh
-dsh --profile headless "Reply with exactly: PONG"   # 应输出 PONG
+# 2. 配置（默认 OpenCode；使用 Codex 时改 AGENT_RUNTIME=codex）
+cp .env.example .env
+# AGENT_RUNTIME=opencode  # 或 codex
+# AGENT_CLI=/absolute/path/to/opencode
+# AGENT_MODEL=provider/model
 
-# 3. 配置（可选，默认值即可跑）
-cp .env.example .env   # 按需修改，至少确认 DSH_CLI 能找到 dsh
-
-# 4. 启动网关
+# 3. 启动网关
 corepack pnpm gateway serve
 #    http://127.0.0.1:3081
 
-# 5. 提交模拟需求（或直接 POST /api/mock/submit）
+# 4. 提交模拟需求（或直接 POST /api/mock/submit）
 node scripts/simulate-submit.mjs --title "管理后台增加报表导出功能" \
   --description "订单列表页增加导出按钮，支持 CSV/Excel，上限 10 万行，完成后消息中心通知下载。"
 
 # 也可以走标准接口触发（POST /api/pipelines），见下节
 ```
 
-一键演示（安装+启动+提交+实时日志）：
+一键演示（校验所选 CLI + 启动 + 提交 + 实时日志）：
 
 ```bash
 bash scripts/demo-run.sh
 ```
+
+## Agent 运行时与用量
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `AGENT_RUNTIME` | `opencode` | `opencode` 或 `codex`，启动时选择一个 Provider |
+| `AGENT_CLI` | 与运行时同名 | CLI 名称或绝对路径 |
+| `AGENT_MODEL` | 运行时默认 | 可选模型参数 |
+| `AGENT_TIMEOUT_MS` | `600000` | 每次 CLI 调用超时 |
+| `CODEX_SANDBOX` | `workspace-write` | `read-only` / `workspace-write` / `danger-full-access`，仅 Codex 生效 |
+
+OpenCode 实际命令为 `opencode run --format json --dir <cwd> ...`；Codex 为 `codex exec --json -C <cwd> --sandbox <mode> ...`。两者都接收统一 `AgentTask`，Provider 工厂由 `AGENT_RUNTIME` 选择实现。
+
+用量口径：`inputTokens` 不含缓存读取，`outputTokens` 不含推理；缓存命中率为 `cacheReadTokens / (inputTokens + cacheReadTokens)`。费用只使用 Provider 明确返回的值，未知显示 `—`。每个 OpenCode `step_finish` 或 Codex `turn.completed` 计为一次实际模型请求；多 Agent、自动重试和失败后 retry 全部合并。
 
 ## 多开发 Agent 并行联调
 
@@ -163,8 +176,8 @@ http://127.0.0.1:3081/
 ```
 
 - **触发**：表单填写需求（标题/描述/提交人/优先级/fields/policy）→ 直接发起流水线；
-- **配置**：查看当前生效配置（默认模板/模式/策略/触发源），**模板平台管理**（列表查看/编辑/新建/删除，保存立即生效），**Agent 定义管理**（内置 + 自定义 persona/schema/判定规则）；
-- **进度与日志**：流水线列表（5s 自动刷新）、事件流时间线、执行历史（含打回轮次与耗时）、各阶段 Agent 输出、按流水线过滤的实时日志，以及验收通过/拒绝、失败重试操作按钮。
+- **配置**：查看运行时、CLI、模型、超时、Codex 沙箱及流程配置，管理模板与 Agent 定义；
+- **进度与日志**：列表展示请求数/总 Token/费用；详情展示五类 Token、命中率、请求、会话、模型与费用，执行历史逐轮显示用量，同时保留事件、输出、日志和操作按钮。
 
 ## 流水线 API
 
@@ -188,8 +201,8 @@ CLI：`corepack pnpm gateway simulate --title "..."`、`... pipelines list|show|
 ## 状态与历史执行信息
 
 - **当前状态**：`GET /api/pipelines/:id`（`status`、`acceptancePending`、`failure`、`deploy`…）
-- **历史执行**：每次阶段执行都会追加到 `executions[]`（含打回后的多轮执行：`stage/round/status/耗时/output`），不因重跑而丢失
-- **结构化历史**：`GET /api/pipelines/:id/history` 返回 触发信息 + 当前状态摘要 + `executions` + `events` + 各阶段统计（执行次数/失败次数/最近结果/累计耗时）
+- **历史执行**：每次阶段执行都会追加到 `executions[]`（含 `stage/round/status/耗时/output/usage`），不因重跑而丢失
+- **结构化历史**：`GET /api/pipelines/:id/history` 返回触发信息、状态、执行与事件；`stats.usage` 从执行历史派生
 
 ## 状态机
 
@@ -217,15 +230,18 @@ submitted → evaluating → dev_in_progress → testing → test_deploying → 
 ## 测试
 
 ```bash
-corepack pnpm test        # 43 个用例：状态机、验签、字段映射、策略、历史、流程模板、多 Agent 联调、端到端（mock DSH runner）
+corepack pnpm test        # 单元、Provider JSONL、用量、HTTP 与端到端测试
 corepack pnpm typecheck
+corepack pnpm build
 ```
 
-端到端测试使用 `scripts/mock-dsh.mjs`（无 LLM 成本）模拟 agent，覆盖：全链路成功、评估拒绝、**测试不通过打回开发**、**打回超限终止**、**验收失败三策略（rollback/rework/reject）**、**触发级 policy 覆盖环境变量**、**标准接口触发**、**历史执行记录**、**流程模板定制（插入评审节点/删除测试节点/非法模板报错）**、**多开发 Agent 契约联调**、人工验收闸门、失败重试。
+端到端测试使用 `scripts/mock-agent.mjs`（无模型成本）同时模拟 OpenCode 与 Codex JSONL，并覆盖全链路、策略、模板、多 Agent、坏输出重试、失败 retry 和全部实际请求用量合并。
 
 ## 关键设计
 
 - **Agent 任务契约**：每个角色接收统一 `AgentTask`（需求 + 上下文 + 指令 + 输出 schema），只允许输出一个 JSON 对象；网关解析后驱动状态机。
+- **Provider Adapter**：`Orchestrator` 只依赖 `AgentRunner`；Provider 负责命令参数、进程与 JSONL 归一化。
+- **用量单一来源**：流水线汇总始终从 `executions[].usage` 重新合并，避免恢复、并行和 retry 双计数。
 - **模拟 vs 真实**：`PIPELINE_MODE=simulation` 时验收 Agent 按“完整性核对”（需求覆盖/方案/测试计划/部署证据）评审；`real` 时严格按真实交付验收。
 - **异步驱动**：webhook 秒回 202，流水线后台执行，每个阶段结果持久化为 `data/pipelines/<id>.json` + `data/artifacts/<id>/<stage>/` 产物。
 - **部署模式**：`OPS_MODE=auto` 探测 kubectl，无集群时运维 Agent 输出模拟部署计划与证据（rendered-manifests.yaml 等），K8s 就绪后改 `OPS_MODE=kubectl` 即为真实部署。

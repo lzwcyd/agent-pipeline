@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// 模拟 dsh headless agent：读取 task JSON（位置参数），按角色输出固定 JSON。
-// 用于端到端测试与无 LLM 的演示。调用方式与真实 dsh 一致：
-//   mock-dsh.mjs --profile headless '<task-json>'
+// 统一模拟 Agent：读取最后一个位置参数中的 task JSON，按角色输出固定结果。
+// 同时兼容 OpenCode（opencode run）与 Codex（codex exec --json）事件流，
+// 用于端到端测试与无 LLM 成本的演示。
 // 行为开关（环境变量）：
 //   MOCK_REJECT=1                评估阶段返回不通过
 //   MOCK_TEST_FAIL=1             测试阶段返回不通过（打回开发）
@@ -12,26 +12,27 @@
 //   MOCK_OPS_FAIL=1              运维部署返回失败
 //   MOCK_ROLLBACK_FAIL=1         回滚动作返回失败
 //   MOCK_BAD_JSON_FIRST=1        开发阶段首次输出不可解析（测试自动重试）
+//   MOCK_BAD_JSON_ALWAYS_SERVICE=<服务名> 指定服务持续输出无效契约（含重试）
+//   MOCK_EXIT_AFTER_USAGE=<角色> 输出用量后以非零退出码结束
+//   MOCK_TIMEOUT_AFTER_USAGE=<角色> 输出用量后保持运行，等待测试超时终止
 // once 类开关用 artifactsDir 下的状态文件按流水线计数。
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
-let taskArg = "";
-for (let i = 0; i < args.length; i += 1) {
-  if (args[i] === "--profile") {
-    i += 1;
-    continue;
-  }
-  taskArg = args[i] ?? "";
-  break;
+const runtime = args[0] === "run" ? "opencode" : args[0] === "exec" ? "codex" : undefined;
+const taskArg = args.at(-1) ?? "";
+
+if (!runtime) {
+  console.error("mock-agent: 仅支持 OpenCode run 或 Codex exec");
+  process.exit(1);
 }
 
 let task;
 try {
   task = JSON.parse(taskArg);
 } catch {
-  console.error("mock-dsh: 无法解析 task JSON");
+  console.error("mock-agent: 无法解析 task JSON");
   process.exit(1);
 }
 
@@ -83,6 +84,10 @@ switch (role) {
   case "developer": {
     const phase = task?.context?.phase;
     const svc = task?.context?.service?.name ?? "";
+    if (svc && process.env.MOCK_BAD_JSON_ALWAYS_SERVICE === svc) {
+      output = { note: "契约生成失败（模拟持续失败）" };
+      break;
+    }
     // 首次输出无效 JSON（测试自动重试路径）
     if (process.env.MOCK_BAD_JSON_FIRST === "1" && tickState(join(artifactsDir ?? ".", ".mock-badjson-state")) === 0) {
       output = { note: "抱歉，我的分析如下：契约已写入文件。" };
@@ -251,4 +256,38 @@ switch (role) {
     };
 }
 
-console.log(JSON.stringify(output));
+const text = JSON.stringify(output);
+const pipelineId = typeof task.pipelineId === "string" ? task.pipelineId : "unknown";
+
+if (runtime === "codex") {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: `mock-codex-${pipelineId}` }));
+  console.log(JSON.stringify({
+    type: "item.completed",
+    item: { id: `mock-message-${pipelineId}`, type: "agent_message", text },
+  }));
+  console.log(JSON.stringify({
+    type: "turn.completed",
+    usage: {
+      input_tokens: 400,
+      cached_input_tokens: 300,
+      output_tokens: 40,
+      reasoning_output_tokens: 10,
+      cache_write_input_tokens: 20,
+    },
+  }));
+} else {
+  const sessionID = `mock-opencode-${pipelineId}`;
+  console.log(JSON.stringify({ type: "text", sessionID, part: { type: "text", text } }));
+  console.log(JSON.stringify({
+    type: "step_finish",
+    sessionID,
+    part: {
+      type: "step-finish",
+      tokens: { input: 100, output: 30, reasoning: 10, cache: { read: 300, write: 20 } },
+      cost: 0.001,
+    },
+  }));
+}
+
+if (process.env.MOCK_EXIT_AFTER_USAGE === role) process.exitCode = 23;
+if (process.env.MOCK_TIMEOUT_AFTER_USAGE === role) setInterval(() => {}, 1000);

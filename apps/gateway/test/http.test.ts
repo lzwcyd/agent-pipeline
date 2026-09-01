@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
 import { loadConfig } from "../src/config.js";
-import { DshRunner } from "../src/agents/dsh-runner.js";
+import { createAgentRunner } from "../src/agents/provider.js";
 import { PipelineStore } from "../src/pipeline/store.js";
 import { Orchestrator } from "../src/pipeline/orchestrator.js";
 import { CompositeNotifier } from "../src/notify/notifier.js";
@@ -15,7 +15,7 @@ import { DEFAULT_TEMPLATE, TemplateRegistry } from "../src/pipeline/template.js"
 import { AgentRegistry } from "../src/agents/registry.js";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
-const MOCK_DSH = join(REPO_ROOT, "scripts", "mock-dsh.mjs");
+const MOCK_AGENT = join(REPO_ROOT, "scripts", "mock-agent.mjs");
 
 interface HttpHarness {
   baseUrl: string;
@@ -27,8 +27,10 @@ async function makeHttpHarness(env: Record<string, string> = {}): Promise<HttpHa
   const dir = mkdtempSync(join(tmpdir(), "pipeline-http-"));
   const prev = { ...process.env };
   Object.assign(process.env, {
-    DSH_CLI: MOCK_DSH,
-    DSH_AGENT_TIMEOUT_MS: "60000",
+    AGENT_RUNTIME: "opencode",
+    AGENT_CLI: MOCK_AGENT,
+    AGENT_MODEL: "mock-model",
+    AGENT_TIMEOUT_MS: "60000",
     AUTO_ACCEPT: "true",
     MAX_REWORK: "3",
     PIPELINE_DATA_DIR: dir,
@@ -39,7 +41,7 @@ async function makeHttpHarness(env: Record<string, string> = {}): Promise<HttpHa
   const logger = createLogger({ level: "info", logsDir: cfg.logsDir });
   const store = new PipelineStore(cfg.pipelinesDir);
   const notifier = new CompositeNotifier(cfg);
-  const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
+  const runner = createAgentRunner(cfg, logger);
   const sources = createFormSources(cfg);
   const agentRegistry = new AgentRegistry();
   const registry = new TemplateRegistry({ dir: cfg.templatesDir, initial: [DEFAULT_TEMPLATE], validAgents: agentRegistry.names() });
@@ -73,7 +75,7 @@ async function waitPipeline(baseUrl: string, id: string, timeoutMs = 30000): Pro
   }
 }
 
-describe("HTTP API 集成测试（mock DSH runner）", () => {
+describe("HTTP API 集成测试（mock AgentRunner）", () => {
   let h: HttpHarness;
   beforeEach(async () => {
     h = await makeHttpHarness();
@@ -96,6 +98,13 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
     const html = await res.text();
     expect(html).toContain("agent-pipeline 控制台");
     expect(html).toContain("tab-trigger");
+    expect(html).toContain("<th>用量</th>");
+
+    const jsRes = await fetch(`${h.baseUrl}/app.js`);
+    const js = await jsRes.text();
+    expect(js).toContain("用量汇总");
+    expect(js).toContain("缓存命中率");
+    expect(js).toContain("Provider 费用");
   });
 
   it("GET /api/config 返回脱敏配置", async () => {
@@ -106,11 +115,21 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
       port: number;
       sources: Record<string, boolean>;
       pipelineMode: string;
+      agentRuntime: string;
+      agentCli: string;
+      agentModel: string | null;
+      agentTimeoutMs: number;
+      codexSandbox: string;
     };
     expect(cfg.template).toBe("default");
     expect(cfg.sources.mock).toBe(true);
     expect(cfg.sources.api).toBe(true);
     expect(cfg.pipelineMode).toBeTruthy();
+    expect(cfg.agentRuntime).toBe("opencode");
+    expect(cfg.agentCli).toBe(MOCK_AGENT);
+    expect(cfg.agentModel).toBe("mock-model");
+    expect(cfg.agentTimeoutMs).toBe(60000);
+    expect(cfg.codexSandbox).toBe("workspace-write");
   });
 
   it("POST /api/templates 动态注册新模板（立即生效），DELETE 删除，非法模板 400", async () => {
@@ -180,6 +199,7 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
 
     const p = await waitPipeline(h.baseUrl, body.pipelineId);
     expect(p.status).toBe("done");
+    expect(p.usage).toMatchObject({ requestCount: 6, inputTokens: 600 });
     const sub = p.submission as { source: string; meta: { triggerType: string } };
     expect(sub.source).toBe("api");
     expect(sub.meta.triggerType).toBe("api");
@@ -203,7 +223,7 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
       template: string;
       executions: unknown[];
       events: unknown[];
-      stats: { totalExecutions: number; stages: Record<string, unknown> };
+      stats: { totalExecutions: number; stages: Record<string, unknown>; usage: { requestCount: number } };
     };
     expect(hist.status).toBe("done");
     expect(hist.template).toBe("default");
@@ -211,6 +231,11 @@ describe("HTTP API 集成测试（mock DSH runner）", () => {
     expect(hist.events.length).toBeGreaterThan(0);
     expect(hist.stats.totalExecutions).toBe(hist.executions.length);
     expect(hist.stats.stages.evaluating).toBeTruthy();
+    expect(hist.stats.usage.requestCount).toBe(6);
+
+    const listRes = await fetch(`${h.baseUrl}/api/pipelines`);
+    const list = (await listRes.json()) as { pipelines: Array<{ id: string; usage?: { requestCount: number } }> };
+    expect(list.pipelines.find((item) => item.id === body.pipelineId)?.usage?.requestCount).toBe(6);
 
     // events
     const evRes = await fetch(`${h.baseUrl}/api/pipelines/${body.pipelineId}/events`);

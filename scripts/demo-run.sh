@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# 一键演示：安装 headless profile → 启动网关 → 提交模拟需求 → 实时输出通知
-# 要求：本机已安装 dsh（见 README 快速开始）。
+# 一键演示：校验所选 Agent CLI → 启动网关 → 提交需求 → 实时输出通知
+# 要求：已安装 AGENT_RUNTIME 对应的 OpenCode 或 Codex CLI 并完成认证。
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-echo "==> 1/4 安装 DSH headless profile"
-bash scripts/install-headless-profile.sh
+AGENT_RUNTIME="${AGENT_RUNTIME:-opencode}"
+case "$AGENT_RUNTIME" in
+  opencode|codex) ;;
+  *) echo "AGENT_RUNTIME 必须是 opencode 或 codex（当前：$AGENT_RUNTIME）"; exit 1 ;;
+esac
+AGENT_CLI="${AGENT_CLI:-$AGENT_RUNTIME}"
 
-echo "==> 2/4 校验 dsh 可用"
-DSH_CLI="${DSH_CLI:-dsh}"
-"$DSH_CLI" --profile headless "Reply with exactly: PONG" >/dev/null 2>&1 || {
-  echo "dsh headless 校验失败，请检查 DSH_CLI（当前：$DSH_CLI）与模型凭证（~/.dsh/.credentials.yaml 或 DEEPSEEK_API_KEY）"
+echo "==> 1/3 校验 Agent CLI（$AGENT_RUNTIME）"
+command -v "$AGENT_CLI" >/dev/null 2>&1 || {
+  echo "找不到 Agent CLI：$AGENT_CLI。请安装 $AGENT_RUNTIME 或设置 AGENT_CLI 绝对路径。"
   exit 1
 }
+"$AGENT_CLI" --version
 
-echo "==> 3/4 启动网关（后台，端口 3081，日志 /tmp/pipeline-demo.log）"
+echo "==> 2/3 启动网关（后台，端口 3081，日志 /tmp/pipeline-demo.log）"
 lsof -ti :3081 >/dev/null 2>&1 && { echo "端口 3081 已被占用，请先停掉旧进程"; exit 1; }
 corepack pnpm gateway serve > /tmp/pipeline-demo.log 2>&1 &
 GATEWAY_PID=$!
@@ -25,7 +29,7 @@ for _ in $(seq 1 20); do
 done
 echo "   网关已就绪（PID $GATEWAY_PID）"
 
-echo "==> 4/4 提交演示需求（真实 DSH agent 依次执行：评估→开发→测试部署→验收→生产部署）"
+echo "==> 3/3 提交演示需求（$AGENT_RUNTIME 依次执行：评估→开发→测试→部署→验收→生产）"
 node scripts/simulate-submit.mjs \
   --title "管理后台增加报表导出功能" \
   --description "在管理后台的订单列表页增加「导出报表」按钮，支持 CSV 和 Excel 两种格式，导出数据量上限 10 万行，导出完成后通过消息中心通知用户下载。"

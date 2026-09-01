@@ -4,7 +4,7 @@ import { FeishuFormSource } from "../src/forms/feishu.js";
 import { DingTalkFormSource } from "../src/forms/dingtalk.js";
 import { ApiTriggerSource } from "../src/forms/api.js";
 import { FormParseError, extractPolicy } from "../src/forms/types.js";
-import { extractJson } from "../src/agents/dsh-runner.js";
+import { extractJson } from "../src/agents/runner.js";
 
 describe("Mock 表单源", () => {
   it("解析最小负载（含标准 meta）", () => {

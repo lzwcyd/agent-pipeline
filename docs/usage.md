@@ -1,5 +1,34 @@
 # 使用文档
 
+## Agent 运行时与用量
+
+网关启动时通过 `AGENT_RUNTIME` 选择 Provider；`Orchestrator` 只使用统一 `AgentRunner` 接口，不能在单条流水线中热切换。
+
+```bash
+# OpenCode
+AGENT_RUNTIME=opencode
+AGENT_CLI=opencode              # 可用绝对路径
+AGENT_MODEL=provider/model      # 可选
+AGENT_TIMEOUT_MS=600000
+
+# Codex
+AGENT_RUNTIME=codex
+AGENT_CLI=codex
+AGENT_MODEL=gpt-model           # 可选
+CODEX_SANDBOX=workspace-write   # read-only/workspace-write/danger-full-access
+```
+
+OpenCode Provider 使用 `opencode run --format json`，每个 `step_finish` 计一次请求；Codex Provider 使用 `codex exec --json`，每个 `turn.completed` 计一次请求。模型认证与 Provider 配置沿用对应 CLI 自身的配置。
+
+用量同时出现在 `agents.<stage>.usage`、`executions[].usage`、`pipeline.usage` 和历史接口 `stats.usage`。字段包括：
+
+- 非缓存输入、可见输出、推理、缓存读取与缓存写入 Token；
+- `cacheHitRate = cacheReadTokens / (inputTokens + cacheReadTokens)`；
+- 实际请求数、去重会话 ID、去重模型；
+- Provider 明确返回的费用；未返回时为 `null`，系统不自行估价。
+
+多 Agent 并行会合并每个服务的契约轮和实现轮；坏输出自动重试与失败后 retry 也会累计所有已发生请求。
+
 ## 1. 三种触发方式
 
 所有触发方式都归一化为同一标准结构进入流水线。
@@ -66,11 +95,15 @@ CLI 等价命令：`corepack pnpm gateway pipelines list|show <id>|history <id>`
   "template": "multi-dev",                 // 使用的流程模板
   "trigger": { "type": "api", "source": "api" },
   "executions": [                          // 每次阶段执行（打回重跑不覆盖，round 递增）
-    { "stage": "testing", "round": 1, "status": "fail", "durationMs": 58600, "output": {...} },
-    { "stage": "testing", "round": 2, "status": "ok", "durationMs": 100600, "output": {...} }
+    { "stage": "testing", "round": 1, "status": "ok", "durationMs": 58600, "output": {"status":"fail"}, "usage": {"requestCount":1, ...} },
+    { "stage": "testing", "round": 2, "status": "ok", "durationMs": 100600, "output": {"status":"pass"}, "usage": {"requestCount":1, ...} }
   ],
   "events": [ ... ],
-  "stats": { "totalExecutions": 8, "stages": { "testing": { "runs": 2, "failures": 1, ... } } }
+  "stats": {
+    "totalExecutions": 8,
+    "stages": { "testing": { "runs": 2, "failures": 0, ... } },
+    "usage": { "inputTokens": 1234, "requestCount": 8, "cacheHitRate": 0.72, ... }
+  }
 }
 ```
 
@@ -211,7 +244,9 @@ corepack pnpm gateway pipelines retry <id>
 | 问题 | 排查 |
 | --- | --- |
 | 启动报 `流程模板阶段 ... 引用未定义阶段` | 模板 onSuccess/reworkTarget 写错，对照 §4 |
-| agent 一直失败、输出不可解析 | 查看该阶段 `rawOutput`；确认模型可用（`dsh --profile headless "PONG"`） |
+| Agent 一直失败、输出不可解析 | 查看 `rawOutput`/日志；确认 `AGENT_RUNTIME`、`AGENT_CLI`、模型和 CLI 认证；必要时直接运行 CLI 的 `--version` 与最小非交互请求 |
+| Codex 无法写入工程 | 检查 `CODEX_SANDBOX` 与工程目录权限；真实开发通常需要 `workspace-write` |
+| 费用显示 `—` | 当前 Provider 事件未返回费用；系统只展示 Provider 原始费用，不估算 |
 | 飞书回调 401 | 验签失败：核对 `FEISHU_ENCRYPT_KEY` 与回调配置 |
 | 钉钉回调 401 | `DINGTALK_APP_SECRET` 与平台配置不一致 |
 | 验收失败却直接终止 | `ACCEPTANCE_FAILURE_POLICY=reject`（或触发级 policy），改为 rollback/rework |

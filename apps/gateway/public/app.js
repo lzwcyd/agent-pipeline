@@ -7,6 +7,14 @@ const esc = (s) =>
 const fmtTime = (iso) => (iso ? String(iso).replace("T", " ").slice(0, 19) : "-");
 const fmtDur = (ms) => (ms == null ? "-" : ms >= 60000 ? `${(ms / 60000).toFixed(1)}min` : `${Math.round(ms)}s`);
 const statusClass = (s) => (s === "done" ? "st-done" : ["rejected", "failed"].includes(s) ? "st-rejected" : "st-submitted");
+const fmtNum = (value) => new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+const usageTokens = (usage) => usage
+  ? (usage.inputTokens || 0) + (usage.outputTokens || 0) + (usage.reasoningTokens || 0) + (usage.cacheReadTokens || 0) + (usage.cacheWriteTokens || 0)
+  : 0;
+const fmtCost = (usage) => usage?.costUsd == null ? "—" : `$${Number(usage.costUsd).toFixed(6)}`;
+const compactUsage = (usage) => usage
+  ? `${fmtNum(usage.requestCount)} 请求 · ${fmtNum(usageTokens(usage))} Token · ${fmtCost(usage)}`
+  : "—";
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -77,10 +85,15 @@ function showResult(sel, text, isErr) {
 async function loadConfig() {
   try {
     const [cfg, tpl] = await Promise.all([api("/api/config"), api("/api/templates")]);
-    $("#cfg-badge").textContent = `默认模板：${cfg.template} · 模板数：${tpl.templates.length} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
+    $("#cfg-badge").textContent = `运行时：${cfg.agentRuntime} · 默认模板：${cfg.template} · 模板数：${tpl.templates.length} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
     const rows = [
       ["流程模板", cfg.template],
       ["流水线模式", cfg.pipelineMode],
+      ["Agent 运行时", cfg.agentRuntime],
+      ["Agent CLI", cfg.agentCli],
+      ["Agent 模型", cfg.agentModel || "运行时默认"],
+      ["Agent 超时", `${cfg.agentTimeoutMs} ms`],
+      ["Codex 沙箱", cfg.codexSandbox],
       ["验收失败策略", cfg.acceptanceFailurePolicy],
       ["自动验收", cfg.autoAccept],
       ["打回上限", cfg.maxRework],
@@ -265,12 +278,13 @@ async function loadPipelines() {
     const tb = $("#pipeline-table tbody");
     tb.innerHTML = pipelines
       .map(
-        (p) => `<tr data-id="${p.id}" class="row">
+        (p) => `<tr data-id="${p.id}">
           <td class="mono">${p.id.slice(0, 8)}</td>
           <td>${esc(p.title.slice(0, 30))}</td>
           <td><span class="status ${statusClass(p.status)}">${p.status}</span></td>
           <td>${esc(p.source)}</td>
           <td>${p.reworkCount ?? 0}</td>
+          <td class="mono usage-compact">${esc(compactUsage(p.usage))}</td>
           <td class="muted">${fmtTime(p.updatedAt)}</td>
           <td><button class="sm" data-open="${p.id}">查看</button></td>
         </tr>`,
@@ -302,6 +316,21 @@ async function loadDetail(id) {
           <div class="muted">提交人：${esc(p.submission.submitter)} · 来源：${esc(p.submission.source)} · 模板：${esc(p.templateName)}</div>
           <pre class="json">${esc(p.submission.description)}</pre>
         </div>
+        <div class="full">
+          <b>用量汇总</b>
+          <div class="usage-grid">
+            <div class="usage-metric"><span>输入 Token</span><strong>${fmtNum(p.usage?.inputTokens)}</strong></div>
+            <div class="usage-metric"><span>输出 Token</span><strong>${fmtNum(p.usage?.outputTokens)}</strong></div>
+            <div class="usage-metric"><span>推理 Token</span><strong>${fmtNum(p.usage?.reasoningTokens)}</strong></div>
+            <div class="usage-metric"><span>缓存读取 Token</span><strong>${fmtNum(p.usage?.cacheReadTokens)}</strong></div>
+            <div class="usage-metric"><span>缓存写入 Token</span><strong>${fmtNum(p.usage?.cacheWriteTokens)}</strong></div>
+            <div class="usage-metric"><span>缓存命中率</span><strong>${((p.usage?.cacheHitRate || 0) * 100).toFixed(1)}%</strong></div>
+            <div class="usage-metric"><span>请求次数</span><strong>${fmtNum(p.usage?.requestCount)}</strong></div>
+            <div class="usage-metric"><span>Provider 费用</span><strong>${esc(fmtCost(p.usage))}</strong></div>
+            <div class="usage-metric wide"><span>模型</span><strong>${esc((p.usage?.models || []).join("、") || "—")}</strong></div>
+            <div class="usage-metric wide"><span>会话 ID</span><strong class="mono">${esc((p.usage?.sessionIds || []).join("、") || "—")}</strong></div>
+          </div>
+        </div>
         <div>
           <b>事件流</b>
           <ul class="timeline">
@@ -311,13 +340,13 @@ async function loadDetail(id) {
         <div class="full">
           <b>执行历史（${p.executions.length} 次）</b>
           <table class="ex-table">
-            <tr><th>阶段</th><th>轮次</th><th>结果</th><th>耗时</th><th>说明</th></tr>
+            <tr><th>阶段</th><th>轮次</th><th>结果</th><th>耗时</th><th>请求</th><th>Token</th><th>费用</th><th>说明</th></tr>
             ${p.executions.map((ex) => {
               const out = ex.output || {};
               const note = ex.status === "error" ? (ex.error || "").slice(0, 60)
                 : ex.stage === "dev_in_progress" && out.multi ? `多 Agent：${Object.keys(out.services || {}).join(",")}`
                 : ex.stage === "testing" ? (out.status || "") : "";
-              return `<tr><td class="mono">${esc(ex.stage)}</td><td>${ex.round}</td><td>${ex.status}</td><td>${fmtDur(ex.durationMs)}</td><td class="muted">${esc(note)}</td></tr>`;
+              return `<tr><td class="mono">${esc(ex.stage)}</td><td>${ex.round}</td><td>${ex.status}</td><td>${fmtDur(ex.durationMs)}</td><td>${fmtNum(ex.usage?.requestCount)}</td><td>${fmtNum(usageTokens(ex.usage))}</td><td class="mono">${esc(fmtCost(ex.usage))}</td><td class="muted">${esc(note)}</td></tr>`;
             }).join("")}
           </table>
         </div>
@@ -383,7 +412,7 @@ function startLogPoll(id) {
 (async () => {
   try {
     const cfg = await api("/api/config");
-    $("#cfg-badge").textContent = `模板：${cfg.template} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
+    $("#cfg-badge").textContent = `运行时：${cfg.agentRuntime} · 模板：${cfg.template} · ${cfg.pipelineMode} · OPS:${cfg.opsMode} · 端口 ${cfg.port}`;
   } catch { /* 服务未完全就绪 */ }
   loadPipelines();
   loadTemplateSelect();

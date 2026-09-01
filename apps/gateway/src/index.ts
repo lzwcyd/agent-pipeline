@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { config as dotenvConfig } from "dotenv";
 import { loadConfig, resolveRepoRoot } from "./config.js";
-import { DshRunner } from "./agents/dsh-runner.js";
+import { createAgentRunner } from "./agents/provider.js";
 import { createFormSources } from "./forms/index.js";
 import { PipelineStore } from "./pipeline/store.js";
 import { Orchestrator } from "./pipeline/orchestrator.js";
@@ -47,7 +47,7 @@ async function main() {
 
   const notifier = new CompositeNotifier(cfg);
   const store = new PipelineStore(cfg.pipelinesDir);
-  const runner = new DshRunner({ cli: cfg.DSH_CLI, timeoutMs: cfg.DSH_AGENT_TIMEOUT_MS, logger });
+  const runner = createAgentRunner(cfg, logger);
   const sources = createFormSources(cfg);
   const orchestrator = new Orchestrator({ cfg, store, runner, notifier, registry, agentRegistry, defaultTemplate, logger });
 
